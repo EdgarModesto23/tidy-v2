@@ -1,0 +1,10 @@
+{
+  "plugins": {
+    "svelte": {
+      "enabled": true
+    },
+    "supabase": {
+      "enabled": true
+    }
+  }
+}
