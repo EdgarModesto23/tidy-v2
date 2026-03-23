@@ -7,7 +7,7 @@ export const GET: RequestHandler = async (event) => {
   const next =
     nextParam.startsWith("/") && !nextParam.startsWith("//")
       ? nextParam
-      : "/todo";
+      : "/programs";
 
   if (code) {
     const { error } =

@@ -10,7 +10,10 @@ export const load: PageServerLoad = async ({
   locals: { safeGetSession },
 }) => {
   const { user } = await safeGetSession();
-  const next = safeInternalPath(url.searchParams.get("next") ?? "/todo", "/todo");
+  const next = safeInternalPath(
+    url.searchParams.get("next") ?? "/programs",
+    "/programs",
+  );
   if (user) {
     redirect(303, next);
   }
@@ -25,7 +28,10 @@ export const actions = {
     const fd = await request.formData();
     const email = String(fd.get("email") ?? "").trim();
     const password = String(fd.get("password") ?? "");
-    const next = safeInternalPath(String(fd.get("redirectTo") ?? "/todo"), "/todo");
+    const next = safeInternalPath(
+      String(fd.get("redirectTo") ?? "/programs"),
+      "/programs",
+    );
 
     if (!email || !password) {
       return fail(400, { error: "Email and password are required." });
