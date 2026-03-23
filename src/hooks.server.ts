@@ -24,26 +24,20 @@ export const handle: Handle = async ({ event, resolve }) => {
   );
 
   /**
-   * Validates the JWT with Supabase Auth before trusting the session.
-   * Do not use getSession() alone on the server for authorization decisions.
+   * Always validate auth server-side with getUser().
+   * Avoid trusting session user data sourced from cookies/storage.
    */
   event.locals.safeGetSession = async () => {
-    const {
-      data: { session },
-    } = await event.locals.supabase.auth.getSession();
-    if (!session) {
-      return { session: null, user: null };
-    }
-
     const {
       data: { user },
       error,
     } = await event.locals.supabase.auth.getUser();
-    if (error) {
+    if (error || !user) {
       return { session: null, user: null };
     }
 
-    return { session, user };
+    // Session is not required in this app flow; keep the shape stable.
+    return { session: null, user };
   };
 
   return resolve(event, {

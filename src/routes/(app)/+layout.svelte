@@ -5,16 +5,21 @@
   let { data, children } = $props();
 </script>
 
-<div class="mx-auto w-full max-w-lg px-4 py-8 md:py-12">
+<div class="mx-auto w-full max-w-3xl px-4 py-8 md:py-12">
   <header
     class="border-border/80 mb-8 flex flex-wrap items-center justify-between gap-3 border-b pb-6"
   >
     <a
-      href={resolve("/todo")}
+      href={resolve("/programs")}
       class="text-primary text-xs font-semibold tracking-widest uppercase"
       >Tidy</a
     >
     <nav class="flex flex-wrap items-center gap-2 sm:gap-3">
+      <a
+        href={resolve("/programs")}
+        class="text-muted-foreground hover:text-foreground text-sm transition-colors"
+        >Programs</a
+      >
       <a
         href={resolve("/todo")}
         class="text-muted-foreground hover:text-foreground text-sm transition-colors"

@@ -108,12 +108,6 @@
     </p>
   </header>
 
-  <ul>
-    {#each data.instruments as instrument}
-      <li>{instrument.name}</li>
-    {/each}
-  </ul>
-
   <Card>
     <CardHeader class="pb-4">
       <CardTitle class="text-lg">New task</CardTitle>
