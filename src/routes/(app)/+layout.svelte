@@ -6,6 +6,10 @@
   import { Button } from "$lib/components/ui/button";
   import { Input } from "$lib/components/ui/input";
   import * as Drawer from "$lib/components/ui/drawer";
+  import SunIcon from "@lucide/svelte/icons/sun";
+  import MoonIcon from "@lucide/svelte/icons/moon";
+
+  import { toggleMode } from "mode-watcher";
 
   let { data, children } = $props();
 
@@ -82,7 +86,8 @@
   function notifyPhaseStart(nextMode: TimerMode) {
     if (!browser || !("Notification" in window)) return;
     if (Notification.permission !== "granted") return;
-    const title = nextMode === "focus" ? "Focus session started" : "Rest session started";
+    const title =
+      nextMode === "focus" ? "Focus session started" : "Rest session started";
     const body =
       nextMode === "focus"
         ? `Back to focus for ${focusMinutes} minutes.`
@@ -155,9 +160,12 @@
                 position: "top-center",
               });
             } else {
-              toast?.warning("Notifications are off. Timer still works normally.", {
-                position: "top-center",
-              });
+              toast?.warning(
+                "Notifications are off. Timer still works normally.",
+                {
+                  position: "top-center",
+                },
+              );
             }
           });
         });
@@ -251,6 +259,15 @@
         class="text-muted-foreground hidden max-w-[14rem] truncate text-sm sm:inline"
         >{data.user?.email ?? ""}</span
       >
+      <Button onclick={toggleMode} variant="outline" size="icon">
+        <SunIcon
+          class="h-[1.2rem] w-[1.2rem] scale-100 rotate-0 !transition-all dark:scale-0 dark:-rotate-90"
+        />
+        <MoonIcon
+          class="absolute h-[1.2rem] w-[1.2rem] scale-0 rotate-90 !transition-all dark:scale-100 dark:rotate-0"
+        />
+        <span class="sr-only">Toggle theme</span>
+      </Button>
       <form method="POST" action="/auth/signout" class="inline">
         <Button type="submit" variant="outline" size="sm">Sign out</Button>
       </form>
@@ -261,10 +278,15 @@
         <Badge class={modeBadgeClass} variant="outline">
           {modeLabel}
         </Badge>
-        <Badge variant="secondary" class="rounded-full px-2.5 py-0.5 text-[11px]">
+        <Badge
+          variant="secondary"
+          class="rounded-full px-2.5 py-0.5 text-[11px]"
+        >
           {cyclesLabel}
         </Badge>
-        <p class="text-foreground text-lg font-semibold tabular-nums sm:text-xl">
+        <p
+          class="text-foreground text-lg font-semibold tabular-nums sm:text-xl"
+        >
           {formattedTime}
         </p>
       </div>
@@ -283,20 +305,30 @@
           </Drawer.Trigger>
           <Drawer.Content>
             <div class="mx-auto w-full max-w-xl">
-              <Drawer.Header class="mx-auto w-full max-w-md space-y-1.5 px-4 pt-2 text-left">
-                <Drawer.Title class="text-foreground text-lg font-semibold tracking-tight">
+              <Drawer.Header
+                class="mx-auto w-full max-w-md space-y-1.5 px-4 pt-2 text-left"
+              >
+                <Drawer.Title
+                  class="text-foreground text-lg font-semibold tracking-tight"
+                >
                   Pomodoro settings
                 </Drawer.Title>
                 <Drawer.Description class="text-muted-foreground text-sm">
-                  Configure focus/rest intervals and cycle goal. Saving restarts the timer.
+                  Configure focus/rest intervals and cycle goal. Saving restarts
+                  the timer.
                 </Drawer.Description>
               </Drawer.Header>
 
               <div class="mx-auto w-full max-w-md px-4 py-4">
-                <div class="rounded-xl border border-border/70 bg-background/70 p-4 sm:p-5">
+                <div
+                  class="rounded-xl border border-border/70 bg-background/70 p-4 sm:p-5"
+                >
                   <div class="grid gap-4 sm:gap-5">
                     <div class="grid gap-2.5">
-                      <label class="text-foreground text-sm font-medium" for="focus-minutes">
+                      <label
+                        class="text-foreground text-sm font-medium"
+                        for="focus-minutes"
+                      >
                         Focus minutes
                       </label>
                       <Input
@@ -309,7 +341,10 @@
                     </div>
 
                     <div class="grid gap-2.5">
-                      <label class="text-foreground text-sm font-medium" for="rest-minutes">
+                      <label
+                        class="text-foreground text-sm font-medium"
+                        for="rest-minutes"
+                      >
                         Rest minutes
                       </label>
                       <Input
@@ -322,7 +357,10 @@
                     </div>
 
                     <div class="grid gap-2.5">
-                      <label class="text-foreground text-sm font-medium" for="cycle-target">
+                      <label
+                        class="text-foreground text-sm font-medium"
+                        for="cycle-target"
+                      >
                         Number of cycles
                       </label>
                       <Input
@@ -337,8 +375,13 @@
                 </div>
               </div>
 
-              <Drawer.Footer class="mx-auto w-full max-w-md px-4 pb-5 pt-1 sm:flex-row sm:justify-end sm:gap-2">
-                <Button class="h-11 w-full sm:w-auto sm:min-w-28" onclick={saveSettings}>Save</Button>
+              <Drawer.Footer
+                class="mx-auto w-full max-w-md px-4 pb-5 pt-1 sm:flex-row sm:justify-end sm:gap-2"
+              >
+                <Button
+                  class="h-11 w-full sm:w-auto sm:min-w-28"
+                  onclick={saveSettings}>Save</Button
+                >
                 <Drawer.Close
                   class="border-input bg-background hover:bg-accent hover:text-accent-foreground inline-flex h-11 w-full items-center justify-center rounded-4xl border px-4 text-sm font-medium transition-colors sm:w-auto sm:min-w-28"
                 >
