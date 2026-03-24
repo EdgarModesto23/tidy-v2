@@ -14,5 +14,5 @@ export const load: LayoutServerLoad = async ({ locals, url }) => {
       `/auth/signin?next=${encodeURIComponent(next || "/todo")}`,
     );
   }
-  return {};
+  return { userId: user.id };
 };

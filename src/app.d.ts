@@ -13,6 +13,10 @@ declare global {
       session: Session | null;
       user: User | null;
     }
+    interface LayoutData {
+      /** Server-derived; use for client cache keys under (app). */
+      userId?: string;
+    }
   }
 }
 

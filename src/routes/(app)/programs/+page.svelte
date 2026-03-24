@@ -2,6 +2,8 @@
   import { browser } from "$app/environment";
   import { resolve } from "$app/paths";
   import { enhance } from "$app/forms";
+  import { invalidate } from "$app/navigation";
+  import { clearProgramListCache } from "$lib/cache/learningDataCache";
   import { Spinner } from "$lib/components/ui/spinner";
   import { Button } from "$lib/components/ui/button";
   import {
@@ -68,6 +70,12 @@
             successMessage;
           toast?.success(message, { id, position: "top-center", icon: null });
         }
+        const ok =
+          result.type === "success" || result.type === "redirect";
+        if (ok && data.userId != null) {
+          clearProgramListCache(data.userId);
+          await invalidate("app:learning:list");
+        }
         onDone?.();
         await update();
       };
@@ -120,31 +128,104 @@
           No programs yet. Create one with the form →
         </p>
       {:else}
-        <ul class="flex flex-col gap-2">
+        <ul class="flex flex-col gap-3">
           {#each data.programs as p (p.id)}
-            <li>
-              <a
-                href={resolve(`/programs/${p.id}`)}
-                class="border-border/80 bg-card hover:border-primary/40 focus-visible:ring-ring block rounded-2xl border px-4 py-3 transition-colors focus-visible:ring-[3px] focus-visible:outline-none"
+            <li
+              class="border-border/80 bg-card rounded-2xl border transition-colors hover:border-primary/30"
+              class:opacity-80={!!p.completed_at}
+            >
+              <div
+                class="flex flex-col gap-3 p-4 sm:flex-row sm:items-start sm:justify-between sm:gap-4"
               >
-                <span class="text-foreground font-medium">{p.name}</span>
-                {#if p.description}
-                  <span
-                    class="text-muted-foreground mt-0.5 line-clamp-2 block text-sm"
-                    >{p.description}</span
-                  >
-                {/if}
-                <span
-                  class="text-muted-foreground mt-2 flex flex-wrap gap-x-3 gap-y-1 text-xs"
+                <a
+                  href={resolve(`/programs/${p.id}`)}
+                  class="focus-visible:ring-ring group min-w-0 flex-1 rounded-xl focus-visible:ring-[3px] focus-visible:outline-none"
                 >
-                  <span class="capitalize">{p.reason}</span>
-                  {#if p.target_start_date}
-                    <span class="tabular-nums"
-                      >Starts {p.target_start_date}</span
+                  <span
+                    class="text-foreground font-medium transition-colors group-hover:text-primary"
+                    class:line-through={!!p.completed_at}>{p.name}</span
+                  >
+                  {#if p.description}
+                    <span
+                      class="text-muted-foreground mt-1 line-clamp-2 block text-sm leading-relaxed"
+                      >{p.description}</span
                     >
                   {/if}
-                </span>
-              </a>
+                  <span
+                    class="text-muted-foreground mt-2 flex flex-wrap gap-x-3 gap-y-1 text-xs"
+                  >
+                    <span class="capitalize">{p.reason}</span>
+                    {#if p.target_start_date}
+                      <span class="tabular-nums"
+                        >Starts {p.target_start_date}</span
+                      >
+                    {/if}
+                    {#if p.completed_at}
+                      <span class="text-primary font-medium">Done</span>
+                    {/if}
+                  </span>
+                </a>
+
+                <div
+                  class="flex flex-wrap items-center gap-2 border-border/60 border-t pt-3 sm:w-auto sm:border-t-0 sm:border-l sm:pt-0 sm:pl-4"
+                >
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    class="h-8"
+                    href={resolve(`/programs/${p.id}/edit`)}
+                  >
+                    Edit
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    class="h-8"
+                    href={resolve(`/programs/${p.id}`)}
+                  >
+                    Roadmap
+                  </Button>
+                  <form
+                    method="POST"
+                    action="?/toggleProgramComplete"
+                    class="inline"
+                    use:enhance={dbActionToast(
+                      "Updating…",
+                      p.completed_at ? "Marked active." : "Marked done.",
+                    )}
+                  >
+                    <input type="hidden" name="program_id" value={p.id} />
+                    <Button variant="secondary" size="sm" class="h-8" type="submit">
+                      {p.completed_at ? "Reopen" : "Done"}
+                    </Button>
+                  </form>
+                  <form
+                    method="POST"
+                    action="?/deleteProgram"
+                    class="inline"
+                    use:enhance={dbActionToast("Deleting…", "Program deleted.")}
+                    onsubmit={(e) => {
+                      if (
+                        !confirm(
+                          "Delete this program and all modules, sessions, and related data?",
+                        )
+                      ) {
+                        e.preventDefault();
+                      }
+                    }}
+                  >
+                    <input type="hidden" name="program_id" value={p.id} />
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      type="submit"
+                      class="text-destructive hover:text-destructive h-8"
+                    >
+                      Delete
+                    </Button>
+                  </form>
+                </div>
+              </div>
             </li>
           {/each}
         </ul>

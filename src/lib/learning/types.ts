@@ -27,6 +27,8 @@ export type LearningProgramRow = {
   reason_description: string | null;
   target_start_date: string | null;
   target_end_date: string | null;
+  /** When set, treat the program as finished for UI (add column via SQL migration). */
+  completed_at?: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -34,9 +36,12 @@ export type LearningProgramRow = {
 export type LearningModuleRow = {
   id: string;
   learning_program_id: string;
+  /** NULL = root module for this program (exactly one per program). */
+  parent_module_id?: string | null;
   title: string;
   description: string | null;
   sort_order: number;
+  completed_at?: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -63,6 +68,8 @@ export type LearningSessionRow = {
   status: LearningSessionStatus;
   actual_started_at: string | null;
   actual_completed_at: string | null;
+  /** Optional DB column; UI completion uses status + actual_completed_at. */
+  completed_at?: string | null;
   estimated_duration_minutes: number | null;
   notes: string | null;
   created_at: string;

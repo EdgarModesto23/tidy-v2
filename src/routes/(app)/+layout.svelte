@@ -1,7 +1,9 @@
 <script lang="ts">
   import { browser } from "$app/environment";
   import { resolve } from "$app/paths";
-  import { onDestroy } from "svelte";
+  import { onDestroy, onMount } from "svelte";
+  import { clearAllLearningCaches } from "$lib/cache/learningDataCache";
+  import { supabase } from "$lib/supabaseClient";
   import { Badge } from "$lib/components/ui/badge";
   import { Button } from "$lib/components/ui/button";
   import { Input } from "$lib/components/ui/input";
@@ -12,6 +14,17 @@
   import { toggleMode } from "mode-watcher";
 
   let { data, children } = $props();
+
+  onMount(() => {
+    const { data: sub } = supabase.auth.onAuthStateChange((event) => {
+      if (event === "SIGNED_OUT") {
+        clearAllLearningCaches();
+      }
+    });
+    return () => {
+      sub.subscription.unsubscribe();
+    };
+  });
 
   type TimerMode = "focus" | "rest";
 
@@ -235,7 +248,7 @@
   });
 </script>
 
-<div class="mx-auto w-full max-w-3xl px-4 py-8 md:py-12">
+<div class="mx-auto w-full max-w-5xl px-4 py-8 md:py-12">
   <header
     class="border-border/80 mb-8 flex flex-wrap items-center justify-between gap-3 border-b pb-6"
   >
@@ -268,7 +281,12 @@
         />
         <span class="sr-only">Toggle theme</span>
       </Button>
-      <form method="POST" action="/auth/signout" class="inline">
+      <form
+        method="POST"
+        action="/auth/signout"
+        class="inline"
+        onsubmit={() => clearAllLearningCaches()}
+      >
         <Button type="submit" variant="outline" size="sm">Sign out</Button>
       </form>
     </nav>

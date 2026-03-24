@@ -4,8 +4,13 @@ import tailwindcss from "@tailwindcss/vite";
 
 export default defineConfig({
   plugins: [sveltekit(), tailwindcss()],
-  // bits-ui ships .svelte sources; SSR must bundle them so Node never loads them raw.
+  // bits-ui + xyflow ship sources / use directory imports; bundle for SSR so Node resolves them.
   ssr: {
-    noExternal: ["bits-ui"],
+    noExternal: [
+      "bits-ui",
+      "@xyflow/svelte",
+      "@xyflow/system",
+      "@svelte-put/shortcut",
+    ],
   },
 });
