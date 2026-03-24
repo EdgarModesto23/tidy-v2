@@ -11,6 +11,7 @@
     CardHeader,
     CardTitle,
   } from "$lib/components/ui/card";
+  import DestructiveConfirmDialog from "$lib/components/destructive-confirm-dialog.svelte";
   import { Checkbox } from "$lib/components/ui/checkbox";
   import { Input } from "$lib/components/ui/input";
   import { Separator } from "$lib/components/ui/separator";
@@ -21,6 +22,14 @@
   let ready = $state(false);
   let input = $state("");
   let filter = $state<"all" | "active" | "completed">("all");
+  let pendingTodoRemove = $state<Todo | null>(null);
+  let clearCompletedDialogOpen = $state(false);
+
+  const removeTodoDescription = $derived(
+    pendingTodoRemove
+      ? `Remove "${pendingTodoRemove.title}"? This cannot be undone.`
+      : "",
+  );
 
   const filtered = $derived.by(() => {
     if (filter === "active") return todos.filter((t) => !t.done);
@@ -30,6 +39,13 @@
 
   const activeCount = $derived(todos.filter((t) => !t.done).length);
   const completedCount = $derived(todos.filter((t) => t.done).length);
+
+  const clearCompletedDescription = $derived(
+    completedCount > 0
+      ? `Remove all ${completedCount} completed task${completedCount === 1 ? "" : "s"}? This cannot be undone.`
+      : "Remove all completed tasks? This cannot be undone.",
+  );
+
   let { data }: PageProps = $props();
 
   onMount(() => {
@@ -199,7 +215,7 @@
                 variant="ghost"
                 size="sm"
                 class="text-muted-foreground hover:text-destructive shrink-0"
-                onclick={() => remove(todo.id)}
+                onclick={() => (pendingTodoRemove = todo)}
                 aria-label="Remove {todo.title}"
               >
                 Remove
@@ -226,7 +242,7 @@
               variant="ghost"
               size="sm"
               class="text-destructive hover:text-destructive"
-              onclick={clearCompleted}
+              onclick={() => (clearCompletedDialogOpen = true)}
             >
               Clear completed
             </Button>
@@ -239,4 +255,27 @@
       Nothing here yet. Add your first task above.
     </p>
   {/if}
+
+  <DestructiveConfirmDialog
+    open={pendingTodoRemove !== null}
+    onOpenChange={(v) => {
+      if (!v) pendingTodoRemove = null;
+    }}
+    title="Remove task?"
+    description={removeTodoDescription}
+    confirmLabel="Remove"
+    onConfirm={() => {
+      const t = pendingTodoRemove;
+      if (t) remove(t.id);
+    }}
+  />
+
+  <DestructiveConfirmDialog
+    open={clearCompletedDialogOpen}
+    onOpenChange={(v) => (clearCompletedDialogOpen = v)}
+    title="Clear completed tasks?"
+    description={clearCompletedDescription}
+    confirmLabel="Clear completed"
+    onConfirm={() => clearCompleted()}
+  />
 </main>

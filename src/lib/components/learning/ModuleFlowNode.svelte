@@ -9,6 +9,8 @@
     clearProgramBundleCache,
     clearProgramListCache,
   } from "$lib/cache/learningDataCache";
+  import DestructiveConfirmDialog from "$lib/components/destructive-confirm-dialog.svelte";
+  import { dbActionToastEnhance } from "$lib/forms/dbActionToastEnhance";
   import type { LearningModuleRow } from "$lib/learning/types";
   import CheckIcon from "@lucide/svelte/icons/check";
   import PencilIcon from "@lucide/svelte/icons/pencil";
@@ -24,29 +26,36 @@
 
   let { data }: NodeProps & { data: ModuleNodeData } = $props();
 
-  function flowActionEnhance() {
-    return () =>
-      async ({
-        result,
-        update,
-      }: {
-        result: { type: string };
-        update: () => Promise<void>;
-      }) => {
-        if (
-          (result.type === "success" || result.type === "redirect") &&
-          data.userId
-        ) {
-          clearProgramListCache(data.userId);
-          clearProgramBundleCache(data.userId, data.programId);
-          await invalidate("app:learning:list");
-          await invalidate(`app:learning:program:${data.programId}`);
-        }
-        await update();
-      };
+  async function afterModuleMutation() {
+    if (!data.userId) return;
+    clearProgramListCache(data.userId);
+    clearProgramBundleCache(data.userId, data.programId);
+    await invalidate("app:learning:list");
+    await invalidate(`app:learning:program:${data.programId}`);
   }
 
   const done = $derived(!!data.module.completed_at);
+
+  const toggleEnhance = $derived(
+    dbActionToastEnhance(
+      done ? "Reopening module…" : "Marking done…",
+      done ? "Module reopened." : "Module marked done.",
+      { onSuccess: afterModuleMutation },
+    ),
+  );
+
+  const deleteEnhance = dbActionToastEnhance("Removing module…", "Module removed.", {
+    onSuccess: afterModuleMutation,
+  });
+
+  let moduleDeleteOpen = $state(false);
+  let deleteModuleFormEl: HTMLFormElement | undefined = $state();
+
+  const moduleDeleteDescription = $derived(
+    !data.module.parent_module_id
+      ? "Delete the root module? This removes every sub-module and their sessions."
+      : "Remove this module and all of its sessions?",
+  );
 </script>
 
 <div
@@ -98,7 +107,7 @@
     <form
       method="POST"
       action="?/toggleModuleComplete"
-      use:enhance={flowActionEnhance()}
+      use:enhance={toggleEnhance}
       class="inline"
     >
       <input type="hidden" name="module_id" value={data.module.id} />
@@ -114,28 +123,34 @@
     </form>
 
     <form
+      bind:this={deleteModuleFormEl}
       method="POST"
       action="?/deleteModule"
-      use:enhance={flowActionEnhance()}
+      use:enhance={deleteEnhance}
       class="inline"
-      onsubmit={(e) => {
-        if (!confirm("Remove this module and all of its sessions?")) {
-          e.preventDefault();
-        }
-      }}
     >
       <input type="hidden" name="module_id" value={data.module.id} />
       <Button
         variant="ghost"
         size="sm"
-        type="submit"
+        type="button"
         class="text-destructive hover:text-destructive h-8 gap-1 px-2 text-xs"
+        onclick={() => (moduleDeleteOpen = true)}
       >
         <Trash2Icon class="size-3.5 shrink-0" />
         Delete
       </Button>
     </form>
   </div>
+
+  <DestructiveConfirmDialog
+    open={moduleDeleteOpen}
+    onOpenChange={(v) => (moduleDeleteOpen = v)}
+    title="Remove module?"
+    description={moduleDeleteDescription}
+    confirmLabel="Remove"
+    onConfirm={() => deleteModuleFormEl?.requestSubmit()}
+  />
 
   <Handle
     type="source"

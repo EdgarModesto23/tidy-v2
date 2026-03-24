@@ -1,10 +1,11 @@
 <script lang="ts">
-  import { browser } from "$app/environment";
   import { resolve } from "$app/paths";
   import { enhance } from "$app/forms";
   import { invalidate } from "$app/navigation";
   import { clearProgramListCache } from "$lib/cache/learningDataCache";
-  import { Spinner } from "$lib/components/ui/spinner";
+  import DestructiveConfirmDialog from "$lib/components/destructive-confirm-dialog.svelte";
+  import { requestSubmitFormById } from "$lib/dom/form";
+  import { dbActionToastEnhance } from "$lib/forms/dbActionToastEnhance";
   import { Button } from "$lib/components/ui/button";
   import {
     Card,
@@ -22,64 +23,12 @@
 
   let reason = $state<"instrumental" | "intrinsic">("intrinsic");
   let creating = $state(false);
-  let toastApi = $state<any>(null);
+  let programDeleteTargetId = $state<string | null>(null);
 
-  async function getToast() {
-    if (!browser) return null;
-    if (toastApi) return toastApi;
-    const mod = await import("svelte-sonner");
-    toastApi = mod.toast;
-    return toastApi;
-  }
-
-  function dbActionToast(
-    pendingMessage: string,
-    successMessage: string,
-    onStart?: () => void,
-    onDone?: () => void,
-  ) {
-    return () => {
-      onStart?.();
-      const id = crypto.randomUUID();
-      const toastReady = getToast();
-      void toastReady.then((toast) => {
-        toast?.loading(pendingMessage, {
-          id,
-          position: "top-center",
-          icon: Spinner,
-        });
-      });
-      return async ({ result, update }: any) => {
-        const toast = await toastReady;
-        if (result.type === "failure") {
-          const message =
-            (result.data as { message?: string } | null)?.message ??
-            "Database action failed.";
-          toast?.error(message, { id, position: "top-center", icon: null });
-        } else if (result.type === "error") {
-          toast?.error("Unexpected server error.", {
-            id,
-            position: "top-center",
-            icon: null,
-          });
-        } else if (result.type === "redirect") {
-          toast?.success(successMessage, { id, position: "top-center", icon: null });
-        } else {
-          const message =
-            (result.data as { message?: string } | null)?.message ??
-            successMessage;
-          toast?.success(message, { id, position: "top-center", icon: null });
-        }
-        const ok =
-          result.type === "success" || result.type === "redirect";
-        if (ok && data.userId != null) {
-          clearProgramListCache(data.userId);
-          await invalidate("app:learning:list");
-        }
-        onDone?.();
-        await update();
-      };
-    };
+  async function afterListMutation() {
+    if (data.userId == null) return;
+    clearProgramListCache(data.userId);
+    await invalidate("app:learning:list");
   }
 </script>
 
@@ -189,9 +138,10 @@
                     method="POST"
                     action="?/toggleProgramComplete"
                     class="inline"
-                    use:enhance={dbActionToast(
+                    use:enhance={dbActionToastEnhance(
                       "Updating…",
                       p.completed_at ? "Marked active." : "Marked done.",
+                      { onSuccess: afterListMutation },
                     )}
                   >
                     <input type="hidden" name="program_id" value={p.id} />
@@ -200,26 +150,23 @@
                     </Button>
                   </form>
                   <form
+                    id={`delete-program-form-${p.id}`}
                     method="POST"
                     action="?/deleteProgram"
                     class="inline"
-                    use:enhance={dbActionToast("Deleting…", "Program deleted.")}
-                    onsubmit={(e) => {
-                      if (
-                        !confirm(
-                          "Delete this program and all modules, sessions, and related data?",
-                        )
-                      ) {
-                        e.preventDefault();
-                      }
-                    }}
+                    use:enhance={dbActionToastEnhance(
+                      "Deleting…",
+                      "Program deleted.",
+                      { onSuccess: afterListMutation },
+                    )}
                   >
                     <input type="hidden" name="program_id" value={p.id} />
                     <Button
                       variant="ghost"
                       size="sm"
-                      type="submit"
+                      type="button"
                       class="text-destructive hover:text-destructive h-8"
+                      onclick={() => (programDeleteTargetId = p.id)}
                     >
                       Delete
                     </Button>
@@ -244,14 +191,17 @@
           method="POST"
           action="?/create"
           class="flex flex-col gap-4"
-          use:enhance={dbActionToast(
+          use:enhance={dbActionToastEnhance(
             "Creating program...",
             "Program created.",
-            () => {
-              creating = true;
-            },
-            () => {
-              creating = false;
+            {
+              onStart: () => {
+                creating = true;
+              },
+              onDone: () => {
+                creating = false;
+              },
+              onSuccess: afterListMutation,
             },
           )}
         >
@@ -361,4 +311,18 @@
       </CardContent>
     </Card>
   </div>
+
+  <DestructiveConfirmDialog
+    open={programDeleteTargetId !== null}
+    onOpenChange={(v) => {
+      if (!v) programDeleteTargetId = null;
+    }}
+    title="Delete program?"
+    description="Delete this program and all modules, sessions, and related data? This cannot be undone."
+    confirmLabel="Delete program"
+    onConfirm={() => {
+      const id = programDeleteTargetId;
+      if (id) requestSubmitFormById(`delete-program-form-${id}`);
+    }}
+  />
 </main>

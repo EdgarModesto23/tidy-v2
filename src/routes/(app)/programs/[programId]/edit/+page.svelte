@@ -1,5 +1,4 @@
 <script lang="ts">
-  import { browser } from "$app/environment";
   import { resolve } from "$app/paths";
   import { enhance } from "$app/forms";
   import { invalidate } from "$app/navigation";
@@ -7,9 +6,11 @@
     clearProgramBundleCache,
     clearProgramListCache,
   } from "$lib/cache/learningDataCache";
-  import { Spinner } from "$lib/components/ui/spinner";
+  import { dbActionToastEnhance } from "$lib/forms/dbActionToastEnhance";
   import { Badge } from "$lib/components/ui/badge";
   import { Button } from "$lib/components/ui/button";
+  import DestructiveConfirmDialog from "$lib/components/destructive-confirm-dialog.svelte";
+  import { requestSubmitFormById } from "$lib/dom/form";
   import {
     Card,
     CardContent,
@@ -32,15 +33,21 @@
   let programReason = $state<"instrumental" | "intrinsic">("intrinsic");
   let aiBusy = $state(false);
   let pendingAction = $state<string | null>(null);
-  let toastApi = $state<any>(null);
 
-  async function getToast() {
-    if (!browser) return null;
-    if (toastApi) return toastApi;
-    const mod = await import("svelte-sonner");
-    toastApi = mod.toast;
-    return toastApi;
-  }
+  let deleteProgramDialogOpen = $state(false);
+  let deleteProgramFormEl: HTMLFormElement | undefined = $state();
+
+  let pendingModuleDelete = $state<{ id: string; isRoot: boolean } | null>(null);
+  let pendingSessionDeleteId = $state<string | null>(null);
+  let pendingWeaknessDeleteId = $state<string | null>(null);
+  let pendingFlashcardDeleteId = $state<string | null>(null);
+  let pendingResourceDeleteId = $state<string | null>(null);
+
+  const moduleDeleteDialogDescription = $derived(
+    pendingModuleDelete?.isRoot
+      ? "Delete the root module? This removes every sub-module and their sessions."
+      : "Remove this module and its sessions?",
+  );
 
   $effect(() => {
     const pr = data.program;
@@ -55,6 +62,14 @@
     flashcard_session: "Flashcards",
   };
 
+  async function afterProgramMutation() {
+    if (data.userId == null) return;
+    clearProgramListCache(data.userId);
+    clearProgramBundleCache(data.userId, params.programId);
+    await invalidate("app:learning:list");
+    await invalidate(`app:learning:program:${params.programId}`);
+  }
+
   function dbActionToast(
     pendingMessage: string,
     successMessage: string,
@@ -65,52 +80,17 @@
     },
   ) {
     const { actionKey, onStart, onDone } = options ?? {};
-    return () => {
-      if (actionKey) pendingAction = actionKey;
-      onStart?.();
-      const id = crypto.randomUUID();
-      const toastReady = getToast();
-      void toastReady.then((toast) => {
-        toast?.loading(pendingMessage, {
-          id,
-          position: "top-center",
-          icon: Spinner,
-        });
-      });
-      return async ({ result, update }: any) => {
-        const toast = await toastReady;
-        if (result.type === "failure") {
-          const message =
-            (result.data as { message?: string } | null)?.message ??
-            "Database action failed.";
-          toast?.error(message, { id, position: "top-center", icon: null });
-        } else if (result.type === "error") {
-          toast?.error("Unexpected server error.", {
-            id,
-            position: "top-center",
-            icon: null,
-          });
-        } else {
-          const message =
-            (result.type === "redirect"
-              ? successMessage
-              : (result.data as { message?: string } | null)?.message) ??
-            successMessage;
-          toast?.success(message, { id, position: "top-center", icon: null });
-        }
-        const ok =
-          result.type === "success" || result.type === "redirect";
-        if (ok && data.userId != null) {
-          clearProgramListCache(data.userId);
-          clearProgramBundleCache(data.userId, params.programId);
-          await invalidate("app:learning:list");
-          await invalidate(`app:learning:program:${params.programId}`);
-        }
+    return dbActionToastEnhance(pendingMessage, successMessage, {
+      onStart: () => {
+        if (actionKey) pendingAction = actionKey;
+        onStart?.();
+      },
+      onDone: () => {
         if (actionKey) pendingAction = null;
         onDone?.();
-        await update();
-      };
-    };
+      },
+      onSuccess: afterProgramMutation,
+    });
   }
 </script>
 
@@ -165,22 +145,20 @@
         {/if}
       </div>
       <form
+        bind:this={deleteProgramFormEl}
         method="POST"
         action="?/deleteProgram"
         class="shrink-0"
-        onsubmit={(e) => {
-          if (!confirm("Delete this program and all of its modules, sessions, cards, and resources?"))
-            e.preventDefault();
-        }}
         use:enhance={dbActionToast("Deleting program...", "Program deleted.", {
           actionKey: "deleteProgram",
         })}
       >
         <Button
-          type="submit"
+          type="button"
           variant="destructive"
           size="sm"
           disabled={pendingAction === "deleteProgram"}
+          onclick={() => (deleteProgramDialogOpen = true)}
         >
           {pendingAction === "deleteProgram" ? "Deleting…" : "Delete program"}
         </Button>
@@ -402,21 +380,27 @@
               {/if}
             </div>
             <form
+              id={`delete-module-form-${mod.id}`}
               method="POST"
               action="?/deleteModule"
               use:enhance={dbActionToast(
                 "Removing module...",
                 "Module removed.",
               )}
-              onsubmit={(e) => {
-                const msg = !mod.parent_module_id
-                  ? "Delete the root module? This removes every sub-module and their sessions."
-                  : "Remove this module and its sessions?";
-                if (!confirm(msg)) e.preventDefault();
-              }}
             >
               <input type="hidden" name="module_id" value={mod.id} />
-              <Button type="submit" variant="ghost" size="sm">Remove module</Button>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onclick={() =>
+                  (pendingModuleDelete = {
+                    id: mod.id,
+                    isRoot: !mod.parent_module_id,
+                  })}
+              >
+                Remove module
+              </Button>
             </form>
           </CardHeader>
           <Separator />
@@ -466,6 +450,7 @@
                         </Button>
                       </form>
                       <form
+                        id={`delete-session-form-${s.id}`}
                         method="POST"
                         action="?/deleteSession"
                         use:enhance={dbActionToast(
@@ -474,9 +459,14 @@
                         )}
                       >
                         <input type="hidden" name="session_id" value={s.id} />
-                        <Button type="submit" variant="ghost" size="sm"
-                          >Remove</Button
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          onclick={() => (pendingSessionDeleteId = s.id)}
                         >
+                          Remove
+                        </Button>
                       </form>
                     </div>
                   </li>
@@ -633,6 +623,7 @@
                   </p>
                 </div>
                 <form
+                  id={`delete-weakness-form-${w.id}`}
                   method="POST"
                   action="?/deleteWeakness"
                   use:enhance={dbActionToast(
@@ -641,7 +632,14 @@
                   )}
                 >
                   <input type="hidden" name="weakness_id" value={w.id} />
-                  <Button type="submit" variant="ghost" size="sm">Remove</Button>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    onclick={() => (pendingWeaknessDeleteId = w.id)}
+                  >
+                    Remove
+                  </Button>
                 </form>
               </li>
             {/each}
@@ -697,6 +695,7 @@
                   <p class="text-muted-foreground mt-1">{c.back_text}</p>
                 </div>
                 <form
+                  id={`delete-flashcard-form-${c.id}`}
                   method="POST"
                   action="?/deleteFlashcard"
                   use:enhance={dbActionToast(
@@ -705,7 +704,14 @@
                   )}
                 >
                   <input type="hidden" name="flashcard_id" value={c.id} />
-                  <Button type="submit" variant="ghost" size="sm">Remove</Button>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    onclick={() => (pendingFlashcardDeleteId = c.id)}
+                  >
+                    Remove
+                  </Button>
                 </form>
               </li>
             {/each}
@@ -762,6 +768,7 @@
                   <Badge variant="outline" class="mt-2 capitalize">{r.kind}</Badge>
                 </div>
                 <form
+                  id={`delete-resource-form-${r.id}`}
                   method="POST"
                   action="?/deleteResource"
                   use:enhance={dbActionToast(
@@ -770,7 +777,14 @@
                   )}
                 >
                   <input type="hidden" name="resource_id" value={r.id} />
-                  <Button type="submit" variant="ghost" size="sm">Remove</Button>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    onclick={() => (pendingResourceDeleteId = r.id)}
+                  >
+                    Remove
+                  </Button>
                 </form>
               </li>
             {/each}
@@ -804,5 +818,84 @@
         </form>
       </CardContent>
     </Card>
+
+    <DestructiveConfirmDialog
+      open={deleteProgramDialogOpen}
+      onOpenChange={(v) => (deleteProgramDialogOpen = v)}
+      title="Delete program?"
+      description="Delete this program and all of its modules, sessions, cards, and resources? This cannot be undone."
+      confirmLabel="Delete program"
+      onConfirm={() => deleteProgramFormEl?.requestSubmit()}
+    />
+
+    <DestructiveConfirmDialog
+      open={pendingModuleDelete !== null}
+      onOpenChange={(v) => {
+        if (!v) pendingModuleDelete = null;
+      }}
+      title="Remove module?"
+      description={moduleDeleteDialogDescription}
+      confirmLabel="Remove"
+      onConfirm={() => {
+        const t = pendingModuleDelete;
+        if (t) requestSubmitFormById(`delete-module-form-${t.id}`);
+      }}
+    />
+
+    <DestructiveConfirmDialog
+      open={pendingSessionDeleteId !== null}
+      onOpenChange={(v) => {
+        if (!v) pendingSessionDeleteId = null;
+      }}
+      title="Remove session?"
+      description="Remove this session from the module? This cannot be undone."
+      confirmLabel="Remove"
+      onConfirm={() => {
+        const id = pendingSessionDeleteId;
+        if (id) requestSubmitFormById(`delete-session-form-${id}`);
+      }}
+    />
+
+    <DestructiveConfirmDialog
+      open={pendingWeaknessDeleteId !== null}
+      onOpenChange={(v) => {
+        if (!v) pendingWeaknessDeleteId = null;
+      }}
+      title="Remove weakness?"
+      description="Remove this weakness from the program? This cannot be undone."
+      confirmLabel="Remove"
+      onConfirm={() => {
+        const id = pendingWeaknessDeleteId;
+        if (id) requestSubmitFormById(`delete-weakness-form-${id}`);
+      }}
+    />
+
+    <DestructiveConfirmDialog
+      open={pendingFlashcardDeleteId !== null}
+      onOpenChange={(v) => {
+        if (!v) pendingFlashcardDeleteId = null;
+      }}
+      title="Remove flashcard?"
+      description="Remove this card from the program pool? This cannot be undone."
+      confirmLabel="Remove"
+      onConfirm={() => {
+        const id = pendingFlashcardDeleteId;
+        if (id) requestSubmitFormById(`delete-flashcard-form-${id}`);
+      }}
+    />
+
+    <DestructiveConfirmDialog
+      open={pendingResourceDeleteId !== null}
+      onOpenChange={(v) => {
+        if (!v) pendingResourceDeleteId = null;
+      }}
+      title="Remove resource?"
+      description="Remove this metalearning resource? This cannot be undone."
+      confirmLabel="Remove"
+      onConfirm={() => {
+        const id = pendingResourceDeleteId;
+        if (id) requestSubmitFormById(`delete-resource-form-${id}`);
+      }}
+    />
   {/if}
 </main>
