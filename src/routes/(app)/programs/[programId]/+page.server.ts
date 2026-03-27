@@ -1,6 +1,5 @@
 import { fail } from "@sveltejs/kit";
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { scheduleUnscheduledSessionsForModule } from "$lib/learning/scheduling";
 import { UUID_RE } from "$lib/learning/uuid";
 import type { Actions } from "./$types";
 
@@ -43,7 +42,7 @@ export const actions: Actions = {
     if (!row) return fail(404, { message: "Program not found." });
 
     const fd = await request.formData();
-    const moduleId = String(fd.get("module_id") ?? "");
+    const moduleId = String(fd.get("module_id") ?? fd.get("learning_module_id") ?? "");
     if (!UUID_RE.test(moduleId)) return fail(400, { message: "Invalid module." });
     const ok = await moduleInProgram(locals.supabase, moduleId, params.programId);
     if (!ok) return fail(404, { message: "Module not found." });
@@ -60,6 +59,67 @@ export const actions: Actions = {
       return fail(400, { message: "This module is already started." });
     }
 
+    let schedulePayload: Array<{
+      session_id: string;
+      scheduled_start_at: string;
+      scheduled_end_at: string;
+    }> = [];
+    const rawSchedule = fd.get("schedule_json");
+    if (typeof rawSchedule === "string" && rawSchedule.trim()) {
+      try {
+        const parsed = JSON.parse(rawSchedule) as unknown;
+        if (!Array.isArray(parsed)) {
+          return fail(400, { message: "Invalid schedule payload." });
+        }
+        schedulePayload = parsed.filter(
+          (x): x is {
+            session_id: string;
+            scheduled_start_at: string;
+            scheduled_end_at: string;
+          } =>
+            !!x &&
+            typeof x === "object" &&
+            typeof (x as { session_id?: unknown }).session_id === "string" &&
+            typeof (x as { scheduled_start_at?: unknown }).scheduled_start_at ===
+              "string" &&
+            typeof (x as { scheduled_end_at?: unknown }).scheduled_end_at ===
+              "string",
+        );
+      } catch {
+        return fail(400, { message: "Invalid schedule payload." });
+      }
+    }
+
+    const { data: moduleSessions, error: sessErr } = await locals.supabase
+      .from("learning_sessions")
+      .select("id, scheduled_start_at")
+      .eq("learning_module_id", moduleId)
+      .order("sort_order", { ascending: true });
+    if (sessErr) return fail(400, { message: sessErr.message });
+
+    const unscheduled = (moduleSessions ?? []).filter((s) => !s.scheduled_start_at);
+    if (unscheduled.length > 0 && schedulePayload.length !== unscheduled.length) {
+      return fail(400, {
+        message:
+          "Please schedule all unscheduled sessions before starting this module.",
+      });
+    }
+
+    const scheduledById = new Map(
+      schedulePayload.map((row) => [row.session_id, row] as const),
+    );
+    for (const s of unscheduled) {
+      const row = scheduledById.get(s.id);
+      if (!row) {
+        return fail(400, { message: "Missing scheduled slot for a session." });
+      }
+      const a = Date.parse(row.scheduled_start_at);
+      const b = Date.parse(row.scheduled_end_at);
+      if (!Number.isFinite(a) || !Number.isFinite(b) || b <= a) {
+        return fail(400, { message: "Invalid scheduled date/time range." });
+      }
+    }
+
     const nowIso = new Date().toISOString();
     const { error: upErr } = await locals.supabase
       .from("learning_modules")
@@ -72,25 +132,25 @@ export const actions: Actions = {
       .eq("learning_program_id", params.programId);
     if (upErr) return fail(400, { message: upErr.message });
 
-    const sched = await scheduleUnscheduledSessionsForModule(locals.supabase, {
-      moduleId,
-      ownerId: user.id,
-    });
-    if (!sched.ok) {
-      await locals.supabase
-        .from("learning_modules")
+    for (const s of unscheduled) {
+      const row = scheduledById.get(s.id)!;
+      const { error } = await locals.supabase
+        .from("learning_sessions")
         .update({
-          module_state: "pending",
-          started_at: null,
+          scheduled_start_at: row.scheduled_start_at,
+          scheduled_end_at: row.scheduled_end_at,
           updated_at: new Date().toISOString(),
         })
-        .eq("id", moduleId);
-      return fail(400, { message: sched.message });
+        .eq("id", s.id)
+        .eq("learning_module_id", moduleId);
+      if (error) {
+        return fail(400, { message: error.message });
+      }
     }
 
     return {
       success: true as const,
-      message: "Module started and unscheduled sessions were placed in your calendar.",
+      message: "Module started and sessions were scheduled.",
     };
   },
 

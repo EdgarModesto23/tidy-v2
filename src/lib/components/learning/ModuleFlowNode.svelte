@@ -60,7 +60,12 @@ import PlayIcon from "@lucide/svelte/icons/play";
     dbActionToastEnhance(
       "Starting module…",
       "Module started.",
-      { onSuccess: afterModuleMutation },
+      {
+        onSuccess: async () => {
+          startScheduleDialogOpen = false;
+          await afterModuleMutation();
+        },
+      },
     ),
   );
 
@@ -78,6 +83,110 @@ import PlayIcon from "@lucide/svelte/icons/play";
   );
 
   let sessionsDialogOpen = $state(false);
+  let startScheduleDialogOpen = $state(false);
+
+  type Slot = {
+    key: string;
+    label: string;
+  };
+
+  const unscheduledSessions = $derived(
+    data.sessions.filter((s) => !s.scheduled_start_at),
+  );
+
+  let draggedSessionId = $state<string | null>(null);
+  let assignmentsBySession = $state<Record<string, string>>({});
+
+  const calendarSlots = $derived.by(() => {
+    const slots: Slot[] = [];
+    const now = new Date();
+    for (let d = 0; d < 7; d++) {
+      const day = new Date(now);
+      day.setDate(now.getDate() + d);
+      const y = day.getFullYear();
+      const m = String(day.getMonth() + 1).padStart(2, "0");
+      const dd = String(day.getDate()).padStart(2, "0");
+      const dayLabel = day.toLocaleDateString(undefined, {
+        weekday: "short",
+        month: "short",
+        day: "numeric",
+      });
+      for (let h = 8; h <= 21; h++) {
+        const hh = String(h).padStart(2, "0");
+        slots.push({
+          key: `${y}-${m}-${dd}T${hh}:00`,
+          label: `${dayLabel} · ${hh}:00`,
+        });
+      }
+    }
+    return slots;
+  });
+
+  const slotToSession = $derived.by(() => {
+    const m = new Map<string, string>();
+    for (const [sid, slotKey] of Object.entries(assignmentsBySession)) {
+      m.set(slotKey, sid);
+    }
+    return m;
+  });
+
+  const allAssigned = $derived(
+    unscheduledSessions.length === 0 ||
+      unscheduledSessions.every((s) => !!assignmentsBySession[s.id]),
+  );
+
+  function openStartDialog() {
+    const next: Record<string, string> = {};
+    startScheduleDialogOpen = true;
+    assignmentsBySession = next;
+  }
+
+  function onDragStartSession(sessionId: string, e: DragEvent) {
+    draggedSessionId = sessionId;
+    e.dataTransfer?.setData("text/plain", sessionId);
+    if (e.dataTransfer) e.dataTransfer.effectAllowed = "move";
+  }
+
+  function onDropSlot(slotKey: string, e: DragEvent) {
+    e.preventDefault();
+    const sid = e.dataTransfer?.getData("text/plain") || draggedSessionId;
+    if (!sid) return;
+
+    // one session per slot and one slot per session
+    const next: Record<string, string> = {};
+    for (const [k, v] of Object.entries(assignmentsBySession)) {
+      if (k === sid) continue;
+      if (v === slotKey) continue;
+      next[k] = v;
+    }
+    next[sid] = slotKey;
+    assignmentsBySession = next;
+    draggedSessionId = null;
+  }
+
+  function clearAssignment(sessionId: string) {
+    const next = { ...assignmentsBySession };
+    delete next[sessionId];
+    assignmentsBySession = next;
+  }
+
+  function scheduledPayloadJson(): string {
+    const rows = unscheduledSessions
+      .map((s) => {
+        const slot = assignmentsBySession[s.id];
+        if (!slot) return null;
+        const localStart = new Date(`${slot}:00`);
+        const duration = s.estimated_duration_minutes ?? 60;
+        const localEnd = new Date(localStart.getTime() + duration * 60 * 1000);
+        return {
+          session_id: s.id,
+          scheduled_start_at: localStart.toISOString(),
+          scheduled_end_at: localEnd.toISOString(),
+        };
+      })
+      .filter(Boolean);
+    return JSON.stringify(rows);
+  }
 </script>
 
 <div
@@ -144,13 +253,16 @@ import PlayIcon from "@lucide/svelte/icons/play";
     </Button>
 
     {#if lifecycle === "pending"}
-      <form method="POST" action="?/startModule" use:enhance={startEnhance} class="inline">
-        <input type="hidden" name="module_id" value={data.module.id} />
-        <Button variant="secondary" size="sm" type="submit" class="h-8 gap-1 px-2 text-xs">
+      <Button
+        variant="secondary"
+        size="sm"
+        type="button"
+        class="h-8 gap-1 px-2 text-xs"
+        onclick={openStartDialog}
+      >
           <PlayIcon class="size-3.5 shrink-0" />
           Start
-        </Button>
-      </form>
+      </Button>
     {:else}
       <form
         method="POST"
@@ -256,6 +368,110 @@ import PlayIcon from "@lucide/svelte/icons/play";
           Open full editor
         </Button>
       </div>
+    </Dialog.Content>
+  </Dialog.Root>
+
+  <Dialog.Root bind:open={startScheduleDialogOpen}>
+    <Dialog.Content class="flex max-h-[min(90vh,46rem)] flex-col gap-4 sm:max-w-5xl">
+      <Dialog.Header>
+        <Dialog.Title>Start module and schedule sessions</Dialog.Title>
+        <Dialog.Description>
+          Drag sessions into calendar slots, then save to start this module with
+          explicit schedule times.
+        </Dialog.Description>
+      </Dialog.Header>
+
+      <div class="grid min-h-0 flex-1 gap-4 overflow-hidden md:grid-cols-[320px,1fr]">
+        <section class="border-border/80 min-h-0 overflow-y-auto rounded-xl border p-3">
+          <p class="mb-2 text-sm font-medium">Sessions</p>
+          {#if unscheduledSessions.length === 0}
+            <p class="text-muted-foreground text-sm">
+              No unscheduled sessions. You can still start this module.
+            </p>
+          {:else}
+            <ul class="space-y-2">
+              {#each unscheduledSessions as s (s.id)}
+                <li
+                  class="border-border/70 bg-muted/30 rounded-lg border px-2.5 py-2"
+                  draggable="true"
+                  ondragstart={(e) => onDragStartSession(s.id, e)}
+                >
+                  <div class="flex items-center justify-between gap-2">
+                    <p class="text-sm font-medium">{s.name || "Untitled session"}</p>
+                    <Badge variant="secondary" class="text-[10px]">
+                      {s.estimated_duration_minutes ?? 60}m
+                    </Badge>
+                  </div>
+                  <p class="text-muted-foreground mt-1 text-xs">
+                    {assignmentsBySession[s.id]
+                      ? `Assigned: ${calendarSlots.find((x) => x.key === assignmentsBySession[s.id])?.label ?? ""}`
+                      : "Not assigned yet"}
+                  </p>
+                  {#if assignmentsBySession[s.id]}
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      class="mt-1 h-6 px-1.5 text-xs"
+                      onclick={() => clearAssignment(s.id)}
+                    >
+                      Clear
+                    </Button>
+                  {/if}
+                </li>
+              {/each}
+            </ul>
+          {/if}
+        </section>
+
+        <section class="border-border/80 min-h-0 overflow-y-auto rounded-xl border p-3">
+          <p class="mb-2 text-sm font-medium">Calendar slots (next 7 days)</p>
+          <div class="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
+            {#each calendarSlots as slot (slot.key)}
+              <div
+                class="border-border/70 hover:bg-muted/40 rounded-lg border p-2"
+                role="button"
+                tabindex="0"
+                aria-label={`Drop session to schedule at ${slot.label}`}
+                ondragover={(e) => e.preventDefault()}
+                ondrop={(e) => onDropSlot(slot.key, e)}
+              >
+                <p class="text-xs font-medium">{slot.label}</p>
+                {#if slotToSession.has(slot.key)}
+                  {@const sid = slotToSession.get(slot.key)}
+                  {@const sess = unscheduledSessions.find((s) => s.id === sid)}
+                  <p class="text-primary mt-1 text-xs">{sess?.name ?? "Assigned"}</p>
+                {:else}
+                  <p class="text-muted-foreground mt-1 text-xs">Drop session here</p>
+                {/if}
+              </div>
+            {/each}
+          </div>
+        </section>
+      </div>
+
+      <form
+        method="POST"
+        action="?/startModule"
+        use:enhance={startEnhance}
+        class="border-border/80 flex flex-wrap items-center justify-between gap-2 border-t pt-3"
+      >
+        <input type="hidden" name="module_id" value={data.module.id} />
+        <input type="hidden" name="schedule_json" value={scheduledPayloadJson()} />
+        <p class="text-muted-foreground text-xs">
+          {#if allAssigned}
+            Ready to start.
+          {:else}
+            Assign all sessions before saving.
+          {/if}
+        </p>
+        <div class="flex items-center gap-2">
+          <Button type="button" variant="outline" onclick={() => (startScheduleDialogOpen = false)}>
+            Cancel
+          </Button>
+          <Button type="submit" disabled={!allAssigned}>Save schedule &amp; start</Button>
+        </div>
+      </form>
     </Dialog.Content>
   </Dialog.Root>
 
