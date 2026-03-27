@@ -1,10 +1,10 @@
 import { Graph, layout as dagreLayout } from "@dagrejs/dagre";
 import type { Edge, Node } from "@xyflow/svelte";
-import type { LearningModuleRow } from "$lib/learning/types";
+import type { LearningModuleRow, LearningSessionRow } from "$lib/learning/types";
 
-/** Match `ModuleFlowNode.svelte`: max-w ~260px, vertical stack (title, optional lines, actions). */
-const MODULE_NODE_WIDTH = 260;
-const MODULE_NODE_HEIGHT = 160;
+/** Match `ModuleFlowNode.svelte`: ~300px wide, vertical stack (title, optional lines, actions). */
+const MODULE_NODE_WIDTH = 300;
+const MODULE_NODE_HEIGHT = 188;
 
 /** Pre-order walk from root(s) for editor lists. */
 export function modulesInTreeOrder(modules: LearningModuleRow[]): LearningModuleRow[] {
@@ -47,6 +47,7 @@ export function layoutModuleNodesForFlow(
   extra: {
     programId: string;
     userId: string;
+    sessionsByModule: Record<string, LearningSessionRow[]>;
   },
 ): { nodes: Node[]; edges: Edge[] } {
   const byId = new Map(modules.map((m) => [m.id, m]));
@@ -121,6 +122,7 @@ export function layoutModuleNodesForFlow(
         module: mod,
         programId: extra.programId,
         userId: extra.userId,
+        sessions: extra.sessionsByModule[mod.id] ?? [],
       },
     };
   });

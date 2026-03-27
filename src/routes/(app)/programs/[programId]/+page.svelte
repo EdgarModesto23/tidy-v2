@@ -43,6 +43,7 @@
       {
         programId: program.id,
         userId: data.userId ?? "",
+        sessionsByModule: data.sessionsByModule,
       },
     );
     nodes = nextNodes;

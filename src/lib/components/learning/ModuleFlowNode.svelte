@@ -5,14 +5,17 @@
   import { Handle, Position, type NodeProps } from "@xyflow/svelte";
   import { Badge } from "$lib/components/ui/badge";
   import { Button } from "$lib/components/ui/button";
+  import * as Dialog from "$lib/components/ui/dialog";
   import {
     clearProgramBundleCache,
     clearProgramListCache,
   } from "$lib/cache/learningDataCache";
   import DestructiveConfirmDialog from "$lib/components/destructive-confirm-dialog.svelte";
   import { dbActionToastEnhance } from "$lib/forms/dbActionToastEnhance";
-  import type { LearningModuleRow } from "$lib/learning/types";
+  import { SESSION_TYPE_LABEL } from "$lib/learning/sessionLabels";
+  import type { LearningModuleRow, LearningSessionRow } from "$lib/learning/types";
   import CheckIcon from "@lucide/svelte/icons/check";
+  import ListIcon from "@lucide/svelte/icons/list";
   import PencilIcon from "@lucide/svelte/icons/pencil";
   import RotateCcwIcon from "@lucide/svelte/icons/rotate-ccw";
   import Trash2Icon from "@lucide/svelte/icons/trash-2";
@@ -22,6 +25,7 @@
     module: LearningModuleRow;
     programId: string;
     userId: string;
+    sessions: LearningSessionRow[];
   };
 
   let { data }: NodeProps & { data: ModuleNodeData } = $props();
@@ -56,11 +60,13 @@
       ? "Delete the root module? This removes every sub-module and their sessions."
       : "Remove this module and all of its sessions?",
   );
+
+  let sessionsDialogOpen = $state(false);
 </script>
 
 <div
   class={cn(
-    "border-border bg-card relative min-w-[220px] max-w-[260px] rounded-2xl border px-3 py-3 text-left shadow-sm",
+    "border-border bg-card relative min-w-[260px] max-w-[300px] rounded-2xl border px-3 py-3 text-left shadow-sm",
     done && "ring-primary/40 ring-2",
   )}
   class:opacity-80={done}
@@ -71,24 +77,41 @@
     class="!h-2 !w-2 !border-border !bg-muted"
   />
 
-  <div class="flex flex-wrap items-center gap-1.5 pr-1">
-    <p
-      class="text-foreground text-sm leading-snug font-semibold tracking-tight"
-      class:line-through={done}
+  <div class="flex items-start gap-2">
+    <div class="min-w-0 flex-1">
+      <div class="flex flex-wrap items-center gap-1.5">
+        <p
+          class="text-foreground text-sm leading-snug font-semibold tracking-tight"
+          class:line-through={done}
+        >
+          {data.module.title}
+        </p>
+        {#if !data.module.parent_module_id}
+          <Badge variant="secondary" class="text-[9px] tracking-wide uppercase"
+            >Root</Badge
+          >
+        {/if}
+      </div>
+      {#if data.module.description}
+        <p
+          class="text-muted-foreground mt-1 line-clamp-2 text-xs leading-relaxed"
+        >
+          {data.module.description}
+        </p>
+      {/if}
+    </div>
+    <Button
+      type="button"
+      variant="outline"
+      size="sm"
+      class="nodrag nopan h-8 shrink-0 gap-1 px-2 text-xs whitespace-nowrap"
+      onclick={() => (sessionsDialogOpen = true)}
+      title="View sessions for this module"
     >
-      {data.module.title}
-    </p>
-    {#if !data.module.parent_module_id}
-      <Badge variant="secondary" class="text-[9px] tracking-wide uppercase"
-        >Root</Badge
-      >
-    {/if}
+      <ListIcon class="size-3.5 shrink-0" />
+      Sessions
+    </Button>
   </div>
-  {#if data.module.description}
-    <p class="text-muted-foreground mt-1 line-clamp-2 text-xs leading-relaxed">
-      {data.module.description}
-    </p>
-  {/if}
 
   <div
     class="nodrag nopan mt-3 flex flex-wrap gap-1.5 border-t border-border/60 pt-3"
@@ -151,6 +174,64 @@
     confirmLabel="Remove"
     onConfirm={() => deleteModuleFormEl?.requestSubmit()}
   />
+
+  <Dialog.Root bind:open={sessionsDialogOpen}>
+    <Dialog.Content
+      class="flex max-h-[min(85vh,40rem)] flex-col gap-4 overflow-hidden sm:max-w-lg"
+    >
+      <Dialog.Header>
+        <Dialog.Title>Sessions — {data.module.title}</Dialog.Title>
+        <Dialog.Description>
+          Planned work for this module on the roadmap. Add or edit sessions in
+          the full editor.
+        </Dialog.Description>
+      </Dialog.Header>
+      <div class="min-h-0 flex-1 overflow-y-auto pr-1">
+        {#if data.sessions.length === 0}
+          <p class="text-muted-foreground text-sm">No sessions yet.</p>
+        {:else}
+          <ul class="space-y-3">
+            {#each data.sessions as s (s.id)}
+              {@const sessionDone = s.status === "completed"}
+              <li
+                class="border-border/80 rounded-xl border px-3 py-3"
+                class:opacity-75={sessionDone}
+              >
+                <div class="flex flex-wrap items-center gap-2">
+                  <span
+                    class="text-foreground text-sm font-medium"
+                    class:line-through={sessionDone}>{s.name}</span
+                  >
+                  <Badge variant="secondary" class="text-xs capitalize">
+                    {SESSION_TYPE_LABEL[s.session_type]}
+                  </Badge>
+                  <Badge variant="outline" class="text-xs">
+                    {s.status.replace("_", " ")}
+                  </Badge>
+                </div>
+                <p class="text-muted-foreground mt-1.5 tabular-nums text-xs">
+                  {s.planned_start_date} → {s.planned_end_date}
+                  {#if s.estimated_duration_minutes}
+                    · ~{s.estimated_duration_minutes} min
+                  {/if}
+                </p>
+              </li>
+            {/each}
+          </ul>
+        {/if}
+      </div>
+      <div class="border-border/80 flex flex-wrap gap-2 border-t pt-2">
+        <Button
+          variant="secondary"
+          size="sm"
+          class="w-full sm:w-auto"
+          href={resolve(`/programs/${data.programId}/edit`)}
+        >
+          Open full editor
+        </Button>
+      </div>
+    </Dialog.Content>
+  </Dialog.Root>
 
   <Handle
     type="source"

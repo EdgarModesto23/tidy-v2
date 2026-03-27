@@ -18,17 +18,90 @@
     CardHeader,
     CardTitle,
   } from "$lib/components/ui/card";
+  import DatePopoverField from "$lib/components/date-popover-field.svelte";
   import { Input } from "$lib/components/ui/input";
+  import * as Select from "$lib/components/ui/select";
   import { Separator } from "$lib/components/ui/separator";
+  import * as Tabs from "$lib/components/ui/tabs";
   import * as ToggleGroup from "$lib/components/ui/toggle-group";
   import type { PageProps } from "./$types";
-  import type { LearningSessionType } from "$lib/learning/types";
+  import { SESSION_TYPE_LABEL } from "$lib/learning/sessionLabels";
   import { modulesInTreeOrder } from "$lib/learning/moduleFlowLayout";
+  import { parseDate, type CalendarDate } from "@internationalized/date";
 
   let { data, form, params }: PageProps = $props();
 
-  const fieldClass =
-    "border-input bg-input/30 focus-visible:border-ring focus-visible:ring-ring/50 h-9 w-full min-w-0 rounded-2xl border px-3 py-1 text-sm transition-colors focus-visible:ring-[3px] focus-visible:outline-none";
+  const SESSION_TYPE_ITEMS = [
+    { value: "study", label: "Study" },
+    { value: "drill", label: "Drill" },
+    { value: "project", label: "Project" },
+    { value: "test", label: "Test" },
+    { value: "flashcard_session", label: "Flashcard session" },
+  ] as const;
+
+  const RESOURCE_KIND_ITEMS = [
+    { value: "link", label: "Link" },
+    { value: "document", label: "Document" },
+    { value: "picture", label: "Picture" },
+  ] as const;
+
+  let sessionTypeByModuleId = $state<Record<string, string>>({});
+  let plannedStartByModuleId = $state<Record<string, CalendarDate>>({});
+  let plannedEndByModuleId = $state<Record<string, CalendarDate>>({});
+  let targetStartCalendar = $state<CalendarDate | undefined>();
+  let targetEndCalendar = $state<CalendarDate | undefined>();
+  let newModuleParentId = $state("");
+  let addResourceKind = $state("link");
+  let editTab = $state("roadmap");
+
+  const parentModuleSelectItems = $derived(
+    data.modules.length > 0
+      ? [
+          { value: "", label: "Under program root (default)" },
+          ...modulesInTreeOrder(data.modules).map((m) => ({
+            value: m.id,
+            label: `${m.title}${!m.parent_module_id ? " — root" : ""}`,
+          })),
+        ]
+      : [],
+  );
+
+  const parentModuleTriggerLabel = $derived(
+    parentModuleSelectItems.find((i) => i.value === newModuleParentId)
+      ?.label ?? "Under program root (default)",
+  );
+
+  const addResourceKindLabel = $derived(
+    RESOURCE_KIND_ITEMS.find((i) => i.value === addResourceKind)?.label ??
+      "Link",
+  );
+
+  $effect.pre(() => {
+    const todayParsed = parseDate(data.todayIso);
+    const next = { ...sessionTypeByModuleId };
+    const nextStart = { ...plannedStartByModuleId };
+    const nextEnd = { ...plannedEndByModuleId };
+    let changed = false;
+    for (const m of data.modules) {
+      if (next[m.id] === undefined) {
+        next[m.id] = "study";
+        changed = true;
+      }
+      if (nextStart[m.id] === undefined) {
+        nextStart[m.id] = todayParsed;
+        changed = true;
+      }
+      if (nextEnd[m.id] === undefined) {
+        nextEnd[m.id] = todayParsed;
+        changed = true;
+      }
+    }
+    if (changed) {
+      sessionTypeByModuleId = next;
+      plannedStartByModuleId = nextStart;
+      plannedEndByModuleId = nextEnd;
+    }
+  });
 
   let programReason = $state<"instrumental" | "intrinsic">("intrinsic");
   let aiBusy = $state(false);
@@ -37,11 +110,28 @@
   let deleteProgramDialogOpen = $state(false);
   let deleteProgramFormEl: HTMLFormElement | undefined = $state();
 
-  let pendingModuleDelete = $state<{ id: string; isRoot: boolean } | null>(null);
+  let pendingModuleDelete = $state<{ id: string; isRoot: boolean } | null>(
+    null,
+  );
   let pendingSessionDeleteId = $state<string | null>(null);
   let pendingWeaknessDeleteId = $state<string | null>(null);
   let pendingFlashcardDeleteId = $state<string | null>(null);
   let pendingResourceDeleteId = $state<string | null>(null);
+
+  let sessionsDialogOpen = $state(false);
+  let sessionsDialogModuleId = $state<string | null>(null);
+
+  const sessionsDialogModule = $derived(
+    sessionsDialogModuleId
+      ? (data.modules.find((m) => m.id === sessionsDialogModuleId) ?? null)
+      : null,
+  );
+
+  const sessionsDialogSessions = $derived(
+    sessionsDialogModuleId
+      ? (data.sessionsByModule[sessionsDialogModuleId] ?? [])
+      : [],
+  );
 
   const moduleDeleteDialogDescription = $derived(
     pendingModuleDelete?.isRoot
@@ -54,13 +144,16 @@
     if (pr) programReason = pr.reason;
   });
 
-  const sessionTypeLabel: Record<LearningSessionType, string> = {
-    test: "Test",
-    study: "Study",
-    drill: "Drill",
-    project: "Project",
-    flashcard_session: "Flashcards",
-  };
+  $effect(() => {
+    const p = data.program;
+    if (!p) return;
+    targetStartCalendar = p.target_start_date
+      ? parseDate(p.target_start_date)
+      : undefined;
+    targetEndCalendar = p.target_end_date
+      ? parseDate(p.target_end_date)
+      : undefined;
+  });
 
   async function afterProgramMutation() {
     if (data.userId == null) return;
@@ -131,7 +224,9 @@
       </p>
     {/if}
 
-    <header class="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+    <header
+      class="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between"
+    >
       <div>
         <h1
           class="text-foreground text-3xl font-semibold tracking-tight md:text-4xl"
@@ -139,7 +234,9 @@
           {data.program.name}
         </h1>
         {#if data.program.description}
-          <p class="text-muted-foreground mt-2 max-w-2xl text-sm leading-relaxed">
+          <p
+            class="text-muted-foreground mt-2 max-w-2xl text-sm leading-relaxed"
+          >
             {data.program.description}
           </p>
         {/if}
@@ -254,28 +351,18 @@
           </div>
 
           <div class="grid gap-3 sm:grid-cols-2">
-            <div class="flex flex-col gap-1.5">
-              <label for="target_start_date" class="text-sm font-medium"
-                >Target start</label
-              >
-              <Input
-                id="target_start_date"
-                name="target_start_date"
-                type="date"
-                value={data.program.target_start_date ?? ""}
-              />
-            </div>
-            <div class="flex flex-col gap-1.5">
-              <label for="target_end_date" class="text-sm font-medium"
-                >Target end</label
-              >
-              <Input
-                id="target_end_date"
-                name="target_end_date"
-                type="date"
-                value={data.program.target_end_date ?? ""}
-              />
-            </div>
+            <DatePopoverField
+              id="target_start_date"
+              label="Target start"
+              name="target_start_date"
+              bind:value={targetStartCalendar}
+            />
+            <DatePopoverField
+              id="target_end_date"
+              label="Target end"
+              name="target_end_date"
+              bind:value={targetEndCalendar}
+            />
           </div>
 
           <Button type="submit" disabled={pendingAction === "updateProgram"}>
@@ -345,30 +432,61 @@
       </CardContent>
     </Card>
 
-    <section class="flex flex-col gap-4">
+    <Tabs.Root bind:value={editTab} class="w-full gap-6">
+      <div class="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+        <div>
+          <h2 class="text-foreground text-lg font-semibold">Program content</h2>
+          <p class="text-muted-foreground mt-1 max-w-2xl text-sm">
+            Switch between roadmap, weaknesses, flashcards, and resources.
+          </p>
+        </div>
+        <Tabs.List
+          class="grid w-full min-w-0 grid-cols-2 gap-1.5 sm:max-w-xl sm:flex-1 sm:grid-cols-4"
+        >
+          <Tabs.Trigger value="roadmap" class="w-full min-w-0 px-2.5">
+            Roadmap
+          </Tabs.Trigger>
+          <Tabs.Trigger value="weaknesses" class="w-full min-w-0 px-2.5">
+            Weaknesses
+          </Tabs.Trigger>
+          <Tabs.Trigger value="flashcards" class="w-full min-w-0 px-2.5">
+            Flashcards
+          </Tabs.Trigger>
+          <Tabs.Trigger value="resources" class="w-full min-w-0 px-2.5">
+            Resources
+          </Tabs.Trigger>
+        </Tabs.List>
+      </div>
+
+      <Tabs.Content value="roadmap" class="mt-2 flex flex-col gap-4">
       <div>
-        <h2 class="text-foreground text-lg font-semibold">Roadmap</h2>
+        <h3 class="text-foreground text-base font-semibold">Roadmap</h3>
         <p class="text-muted-foreground mt-1 max-w-2xl text-sm">
-          Each program has one <strong class="text-foreground">root</strong> module; other
-          modules attach under a parent so the roadmap view can show a tree. Mark sessions
-          done when finished.
+          Each program has one <strong class="text-foreground">root</strong> module;
+          other modules attach under a parent so the roadmap view can show a tree.
+          Mark sessions done when finished.
         </p>
       </div>
 
       {#if data.modules.length === 0}
-        <p class="text-muted-foreground text-sm">No modules yet. Add one below.</p>
+        <p class="text-muted-foreground text-sm">
+          No modules yet. Add one below.
+        </p>
       {/if}
 
       {#each modulesInTreeOrder(data.modules) as mod (mod.id)}
         {@const sessions = data.sessionsByModule[mod.id] ?? []}
         <Card>
-          <CardHeader class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+          <CardHeader
+            class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between"
+          >
             <div>
               <div class="flex flex-wrap items-center gap-2">
                 <CardTitle class="text-base">{mod.title}</CardTitle>
                 {#if !mod.parent_module_id}
-                  <Badge variant="secondary" class="text-[10px] tracking-wide uppercase"
-                    >Root</Badge
+                  <Badge
+                    variant="secondary"
+                    class="text-[10px] tracking-wide uppercase">Root</Badge
                   >
                 {/if}
                 {#if mod.completed_at}
@@ -376,7 +494,8 @@
                 {/if}
               </div>
               {#if mod.description}
-                <CardDescription class="mt-1">{mod.description}</CardDescription>
+                <CardDescription class="mt-1">{mod.description}</CardDescription
+                >
               {/if}
             </div>
             <form
@@ -391,7 +510,7 @@
               <input type="hidden" name="module_id" value={mod.id} />
               <Button
                 type="button"
-                variant="ghost"
+                variant="destructive"
                 size="sm"
                 onclick={() =>
                   (pendingModuleDelete = {
@@ -422,13 +541,15 @@
                           class:line-through={sessionDone}>{s.name}</span
                         >
                         <Badge variant="secondary" class="text-xs capitalize">
-                          {sessionTypeLabel[s.session_type]}
+                          {SESSION_TYPE_LABEL[s.session_type]}
                         </Badge>
                         <Badge variant="outline" class="text-xs">
                           {s.status.replace("_", " ")}
                         </Badge>
                       </div>
-                      <p class="text-muted-foreground mt-1 tabular-nums text-xs">
+                      <p
+                        class="text-muted-foreground mt-1 tabular-nums text-xs"
+                      >
                         {s.planned_start_date} → {s.planned_end_date}
                         {#if s.estimated_duration_minutes}
                           · ~{s.estimated_duration_minutes} min
@@ -441,7 +562,9 @@
                         action="?/toggleSessionComplete"
                         use:enhance={dbActionToast(
                           "Updating session…",
-                          sessionDone ? "Session reopened." : "Session marked done.",
+                          sessionDone
+                            ? "Session reopened."
+                            : "Session marked done.",
                         )}
                       >
                         <input type="hidden" name="session_id" value={s.id} />
@@ -461,7 +584,7 @@
                         <input type="hidden" name="session_id" value={s.id} />
                         <Button
                           type="button"
-                          variant="ghost"
+                          variant="destructive"
                           size="sm"
                           onclick={() => (pendingSessionDeleteId = s.id)}
                         >
@@ -475,7 +598,9 @@
             {/if}
 
             <div class="bg-muted/40 rounded-xl p-4">
-              <p class="text-foreground mb-3 text-sm font-medium">Add session</p>
+              <p class="text-foreground mb-3 text-sm font-medium">
+                Add session
+              </p>
               <form
                 method="POST"
                 action="?/addSession"
@@ -492,38 +617,41 @@
                   maxlength={200}
                   placeholder="Session name"
                 />
-                <select name="session_type" class={fieldClass} required>
-                  <option value="study">Study</option>
-                  <option value="drill">Drill</option>
-                  <option value="project">Project</option>
-                  <option value="test">Test</option>
-                  <option value="flashcard_session">Flashcard session</option>
-                </select>
+                <Select.Root
+                  type="single"
+                  name="session_type"
+                  bind:value={sessionTypeByModuleId[mod.id]}
+                  required
+                  items={[...SESSION_TYPE_ITEMS]}
+                >
+                  <Select.Trigger class="w-full min-w-0">
+                    {SESSION_TYPE_ITEMS.find(
+                      (i) => i.value === sessionTypeByModuleId[mod.id],
+                    )?.label ?? "Study"}
+                  </Select.Trigger>
+                  <Select.Content>
+                    {#each SESSION_TYPE_ITEMS as st (st.value)}
+                      <Select.Item value={st.value} label={st.label} />
+                    {/each}
+                  </Select.Content>
+                </Select.Root>
                 <div class="grid gap-3 sm:grid-cols-2">
-                  <div class="flex flex-col gap-1">
-                    <label class="text-muted-foreground text-xs" for="ps-{mod.id}"
-                      >Planned start</label
-                    >
-                    <Input
-                      id="ps-{mod.id}"
-                      name="planned_start_date"
-                      type="date"
-                      required
-                      value={data.todayIso}
-                    />
-                  </div>
-                  <div class="flex flex-col gap-1">
-                    <label class="text-muted-foreground text-xs" for="pe-{mod.id}"
-                      >Planned end</label
-                    >
-                    <Input
-                      id="pe-{mod.id}"
-                      name="planned_end_date"
-                      type="date"
-                      required
-                      value={data.todayIso}
-                    />
-                  </div>
+                  <DatePopoverField
+                    id={`ps-${mod.id}`}
+                    label="Planned start"
+                    name="planned_start_date"
+                    bind:value={plannedStartByModuleId[mod.id]}
+                    required
+                    labelClass="text-muted-foreground text-xs"
+                  />
+                  <DatePopoverField
+                    id={`pe-${mod.id}`}
+                    label="Planned end"
+                    name="planned_end_date"
+                    bind:value={plannedEndByModuleId[mod.id]}
+                    required
+                    labelClass="text-muted-foreground text-xs"
+                  />
                 </div>
                 <Input
                   name="estimated_duration_minutes"
@@ -556,21 +684,25 @@
           >
             {#if data.modules.length > 0}
               <div class="flex flex-col gap-1.5">
-                <label for="new-mod-parent" class="text-foreground text-sm font-medium"
-                  >Parent</label
+                <label
+                  for="new-mod-parent"
+                  class="text-foreground text-sm font-medium">Parent</label
                 >
-                <select
-                  id="new-mod-parent"
+                <Select.Root
+                  type="single"
                   name="parent_module_id"
-                  class={fieldClass}
+                  bind:value={newModuleParentId}
+                  items={parentModuleSelectItems}
                 >
-                  <option value="">Under program root (default)</option>
-                  {#each modulesInTreeOrder(data.modules) as m}
-                    <option value={m.id}>
-                      {m.title}{!m.parent_module_id ? " — root" : ""}
-                    </option>
-                  {/each}
-                </select>
+                  <Select.Trigger id="new-mod-parent" class="w-full min-w-0">
+                    {parentModuleTriggerLabel}
+                  </Select.Trigger>
+                  <Select.Content>
+                    {#each parentModuleSelectItems as item (item.value)}
+                      <Select.Item value={item.value} label={item.label} />
+                    {/each}
+                  </Select.Content>
+                </Select.Root>
               </div>
             {:else}
               <p class="text-muted-foreground text-xs">
@@ -594,8 +726,9 @@
           </form>
         </CardContent>
       </Card>
-    </section>
+      </Tabs.Content>
 
+      <Tabs.Content value="weaknesses" class="mt-2">
     <Card>
       <CardHeader>
         <CardTitle class="text-lg">Weaknesses</CardTitle>
@@ -616,7 +749,9 @@
                 <div>
                   <p class="text-foreground font-medium">{w.title}</p>
                   {#if w.description}
-                    <p class="text-muted-foreground mt-1 text-sm">{w.description}</p>
+                    <p class="text-muted-foreground mt-1 text-sm">
+                      {w.description}
+                    </p>
                   {/if}
                   <p class="text-muted-foreground mt-2 text-xs">
                     Priority {w.priority}
@@ -634,7 +769,7 @@
                   <input type="hidden" name="weakness_id" value={w.id} />
                   <Button
                     type="button"
-                    variant="ghost"
+                    variant="destructive"
                     size="sm"
                     onclick={() => (pendingWeaknessDeleteId = w.id)}
                   >
@@ -650,10 +785,7 @@
           method="POST"
           action="?/addWeakness"
           class="flex flex-col gap-3 border-t pt-6"
-          use:enhance={dbActionToast(
-            "Adding weakness...",
-            "Weakness added.",
-          )}
+          use:enhance={dbActionToast("Adding weakness...", "Weakness added.")}
         >
           <Input name="title" required maxlength={200} placeholder="Title" />
           <textarea
@@ -675,11 +807,15 @@
         </form>
       </CardContent>
     </Card>
+      </Tabs.Content>
 
+      <Tabs.Content value="flashcards" class="mt-2">
     <Card>
       <CardHeader>
         <CardTitle class="text-lg">Flashcards</CardTitle>
-        <CardDescription>Pool for flashcard sessions (shuffle in the app).</CardDescription>
+        <CardDescription
+          >Pool for flashcard sessions (shuffle in the app).</CardDescription
+        >
       </CardHeader>
       <CardContent class="space-y-6">
         {#if data.flashcards.length === 0}
@@ -706,7 +842,7 @@
                   <input type="hidden" name="flashcard_id" value={c.id} />
                   <Button
                     type="button"
-                    variant="ghost"
+                    variant="destructive"
                     size="sm"
                     onclick={() => (pendingFlashcardDeleteId = c.id)}
                   >
@@ -722,10 +858,7 @@
           method="POST"
           action="?/addFlashcard"
           class="flex flex-col gap-3 border-t pt-6"
-          use:enhance={dbActionToast(
-            "Adding flashcard...",
-            "Flashcard added.",
-          )}
+          use:enhance={dbActionToast("Adding flashcard...", "Flashcard added.")}
         >
           <textarea
             name="front_text"
@@ -747,11 +880,15 @@
         </form>
       </CardContent>
     </Card>
+      </Tabs.Content>
 
+      <Tabs.Content value="resources" class="mt-2">
     <Card>
       <CardHeader>
         <CardTitle class="text-lg">Metalearning resources</CardTitle>
-        <CardDescription>Documents, links, or pictures for this program.</CardDescription>
+        <CardDescription
+          >Documents, links, or pictures for this program.</CardDescription
+        >
       </CardHeader>
       <CardContent class="space-y-6">
         {#if data.resources.length === 0}
@@ -765,7 +902,9 @@
                 <div class="min-w-0 text-sm">
                   <p class="text-foreground font-medium">{r.title}</p>
                   <p class="text-muted-foreground mt-1 break-all">{r.uri}</p>
-                  <Badge variant="outline" class="mt-2 capitalize">{r.kind}</Badge>
+                  <Badge variant="outline" class="mt-2 capitalize"
+                    >{r.kind}</Badge
+                  >
                 </div>
                 <form
                   id={`delete-resource-form-${r.id}`}
@@ -779,7 +918,7 @@
                   <input type="hidden" name="resource_id" value={r.id} />
                   <Button
                     type="button"
-                    variant="ghost"
+                    variant="destructive"
                     size="sm"
                     onclick={() => (pendingResourceDeleteId = r.id)}
                   >
@@ -795,18 +934,31 @@
           method="POST"
           action="?/addResource"
           class="flex flex-col gap-3 border-t pt-6"
-          use:enhance={dbActionToast(
-            "Adding resource...",
-            "Resource added.",
-          )}
+          use:enhance={dbActionToast("Adding resource...", "Resource added.")}
         >
-          <select name="kind" class={fieldClass} required>
-            <option value="link">Link</option>
-            <option value="document">Document</option>
-            <option value="picture">Picture</option>
-          </select>
+          <Select.Root
+            type="single"
+            name="kind"
+            bind:value={addResourceKind}
+            required
+            items={[...RESOURCE_KIND_ITEMS]}
+          >
+            <Select.Trigger class="w-full min-w-0">
+              {addResourceKindLabel}
+            </Select.Trigger>
+            <Select.Content>
+              {#each RESOURCE_KIND_ITEMS as rk (rk.value)}
+                <Select.Item value={rk.value} label={rk.label} />
+              {/each}
+            </Select.Content>
+          </Select.Root>
           <Input name="title" required maxlength={200} placeholder="Title" />
-          <Input name="uri" required maxlength={2000} placeholder="URL or storage path" />
+          <Input
+            name="uri"
+            required
+            maxlength={2000}
+            placeholder="URL or storage path"
+          />
           <textarea
             name="description"
             rows={2}
@@ -818,6 +970,8 @@
         </form>
       </CardContent>
     </Card>
+      </Tabs.Content>
+    </Tabs.Root>
 
     <DestructiveConfirmDialog
       open={deleteProgramDialogOpen}
