@@ -3,9 +3,22 @@
   import { enhance } from "$app/forms";
   import { invalidate } from "$app/navigation";
   import {
+    Background,
+    Controls,
+    MiniMap,
+    Panel,
+    SvelteFlow,
+    type Connection,
+    type Edge,
+    type Node,
+  } from "@xyflow/svelte";
+  import "@xyflow/svelte/dist/style.css";
+  import { mode } from "mode-watcher";
+  import {
     clearProgramBundleCache,
     clearProgramListCache,
   } from "$lib/cache/learningDataCache";
+  import ModuleEditorFlowNode from "$lib/components/learning/ModuleEditorFlowNode.svelte";
   import { dbActionToastEnhance } from "$lib/forms/dbActionToastEnhance";
   import { Badge } from "$lib/components/ui/badge";
   import { Button } from "$lib/components/ui/button";
@@ -21,12 +34,32 @@
   import DatePopoverField from "$lib/components/date-popover-field.svelte";
   import { Input } from "$lib/components/ui/input";
   import * as Select from "$lib/components/ui/select";
-  import { Separator } from "$lib/components/ui/separator";
   import * as Tabs from "$lib/components/ui/tabs";
   import * as ToggleGroup from "$lib/components/ui/toggle-group";
+  import * as Dialog from "$lib/components/ui/dialog";
   import type { PageProps } from "./$types";
-  import { SESSION_TYPE_LABEL } from "$lib/learning/sessionLabels";
-  import { modulesInTreeOrder } from "$lib/learning/moduleFlowLayout";
+  import {
+    layoutModuleNodesForFlowEditor,
+    modulesInTreeOrder,
+  } from "$lib/learning/moduleFlowLayout";
+  import {
+    cloneRoadmapFromData,
+    collectDescendantModuleIds,
+    newTempModuleId,
+    reindexModuleSortOrders,
+    reindexSessionSortOrders,
+    snapshotPayloadJson,
+    validateRoadmapTree,
+  } from "$lib/learning/roadmapDraft";
+  import type {
+    LearningModuleRow,
+    LearningSessionRow,
+    MetalearningResourceRow,
+    ProgramFlashcardRow,
+    ProgramWeaknessRow,
+  } from "$lib/learning/types";
+  import { isUuid } from "$lib/learning/uuid";
+  import PencilIcon from "@lucide/svelte/icons/pencil";
   import { parseDate, type CalendarDate } from "@internationalized/date";
 
   let { data, form, params }: PageProps = $props();
@@ -45,20 +78,31 @@
     { value: "picture", label: "Picture" },
   ] as const;
 
-  let sessionTypeByModuleId = $state<Record<string, string>>({});
-  let plannedStartByModuleId = $state<Record<string, CalendarDate>>({});
-  let plannedEndByModuleId = $state<Record<string, CalendarDate>>({});
+  const flowColorMode = $derived.by((): "dark" | "light" | "system" => {
+    const m = mode.current;
+    if (m === "dark") return "dark";
+    if (m === "light") return "light";
+    return "system";
+  });
+
+  let roadmapDirty = $state(false);
+  let draftModules = $state<LearningModuleRow[]>([]);
+  let draftSessionsByModule = $state<Record<string, LearningSessionRow[]>>({});
+  let saveRoadmapFormEl: HTMLFormElement | undefined = $state();
+
   let targetStartCalendar = $state<CalendarDate | undefined>();
   let targetEndCalendar = $state<CalendarDate | undefined>();
   let newModuleParentId = $state("");
+  let newModuleTitle = $state("");
+  let newModuleDescription = $state("");
   let addResourceKind = $state("link");
   let editTab = $state("roadmap");
 
   const parentModuleSelectItems = $derived(
-    data.modules.length > 0
+    draftModules.length > 0
       ? [
           { value: "", label: "Under program root (default)" },
-          ...modulesInTreeOrder(data.modules).map((m) => ({
+          ...modulesInTreeOrder(draftModules).map((m) => ({
             value: m.id,
             label: `${m.title}${!m.parent_module_id ? " — root" : ""}`,
           })),
@@ -76,32 +120,261 @@
       "Link",
   );
 
+  let editResourceKind = $state("link");
+  const editResourceKindLabel = $derived(
+    RESOURCE_KIND_ITEMS.find((i) => i.value === editResourceKind)?.label ??
+      "Link",
+  );
+
   $effect.pre(() => {
-    const todayParsed = parseDate(data.todayIso);
-    const next = { ...sessionTypeByModuleId };
-    const nextStart = { ...plannedStartByModuleId };
-    const nextEnd = { ...plannedEndByModuleId };
-    let changed = false;
-    for (const m of data.modules) {
-      if (next[m.id] === undefined) {
-        next[m.id] = "study";
-        changed = true;
-      }
-      if (nextStart[m.id] === undefined) {
-        nextStart[m.id] = todayParsed;
-        changed = true;
-      }
-      if (nextEnd[m.id] === undefined) {
-        nextEnd[m.id] = todayParsed;
-        changed = true;
-      }
-    }
-    if (changed) {
-      sessionTypeByModuleId = next;
-      plannedStartByModuleId = nextStart;
-      plannedEndByModuleId = nextEnd;
+    if (!roadmapDirty && data.program) {
+      const c = cloneRoadmapFromData(data.modules, data.sessionsByModule);
+      draftModules = c.modules;
+      draftSessionsByModule = c.sessionsByModule;
     }
   });
+
+  const roadmapPayloadJson = $derived(
+    snapshotPayloadJson(
+      reindexModuleSortOrders(draftModules),
+      reindexSessionSortOrders(draftSessionsByModule),
+    ),
+  );
+
+  const nodeTypes = { moduleEditor: ModuleEditorFlowNode };
+
+  let nodes = $state.raw<Node[]>([]);
+  let edges = $state.raw<Edge[]>([]);
+
+  function updateDraftModule(id: string, patch: Partial<LearningModuleRow>) {
+    roadmapDirty = true;
+    draftModules = draftModules.map((m) =>
+      m.id === id ? { ...m, ...patch } : m,
+    );
+  }
+
+  function parentSelectItemsForModule(moduleId: string): {
+    value: string;
+    label: string;
+  }[] {
+    if (draftModules.length === 0) return [];
+    const forbidden = new Set([
+      moduleId,
+      ...collectDescendantModuleIds(draftModules, moduleId),
+    ]);
+    const items: { value: string; label: string }[] = [
+      { value: "", label: "Under program root (default)" },
+    ];
+    for (const m of modulesInTreeOrder(draftModules)) {
+      if (forbidden.has(m.id)) continue;
+      items.push({
+        value: m.id,
+        label: `${m.title}${!m.parent_module_id ? " — root" : ""}`,
+      });
+    }
+    return items;
+  }
+
+  function setDraftModuleParent(moduleId: string, parentValue: string) {
+    const root = draftModules.find((m) => !m.parent_module_id);
+    if (!root || moduleId === root.id) return;
+
+    const raw = parentValue.trim();
+    let newParent: string;
+    if (raw === "" || raw === root.id) {
+      newParent = root.id;
+    } else if (draftModules.some((m) => m.id === raw)) {
+      newParent = raw;
+    } else {
+      return;
+    }
+
+    if (newParent === moduleId) return;
+    if (wouldCreateCycle(newParent, moduleId)) return;
+
+    const cur = draftModules.find((m) => m.id === moduleId);
+    if (!cur || cur.parent_module_id === newParent) return;
+
+    roadmapDirty = true;
+    draftModules = reindexModuleSortOrders(
+      draftModules.map((m) =>
+        m.id === moduleId ? { ...m, parent_module_id: newParent } : m,
+      ),
+    );
+  }
+
+  function removeDraftModuleTree(id: string) {
+    const descend = collectDescendantModuleIds(draftModules, id);
+    const remove = new Set([id, ...descend]);
+    roadmapDirty = true;
+    draftModules = draftModules.filter((m) => !remove.has(m.id));
+    const nextSess = { ...draftSessionsByModule };
+    for (const mid of remove) {
+      delete nextSess[mid];
+    }
+    draftSessionsByModule = nextSess;
+  }
+
+  function updateDraftSession(sid: string, patch: Partial<LearningSessionRow>) {
+    roadmapDirty = true;
+    draftSessionsByModule = Object.fromEntries(
+      Object.entries(draftSessionsByModule).map(([mid, list]) => [
+        mid,
+        list.map((s) => (s.id === sid ? { ...s, ...patch } : s)),
+      ]),
+    );
+  }
+
+  function removeDraftSession(sid: string) {
+    roadmapDirty = true;
+    draftSessionsByModule = Object.fromEntries(
+      Object.entries(draftSessionsByModule).map(([mid, list]) => [
+        mid,
+        list.filter((s) => s.id !== sid),
+      ]),
+    );
+  }
+
+  function addDraftSession(moduleId: string, session: LearningSessionRow) {
+    const list = draftSessionsByModule[moduleId] ?? [];
+    roadmapDirty = true;
+    draftSessionsByModule = {
+      ...draftSessionsByModule,
+      [moduleId]: [...list, session],
+    };
+  }
+
+  function wouldCreateCycle(source: string, target: string): boolean {
+    const byId = new Map(draftModules.map((m) => [m.id, m]));
+    let cur: string | null | undefined = source;
+    for (let i = 0; i < draftModules.length + 2; i++) {
+      if (cur === target) return true;
+      const row: LearningModuleRow | undefined = cur ? byId.get(cur) : undefined;
+      if (!row?.parent_module_id) break;
+      cur = row.parent_module_id;
+    }
+    return false;
+  }
+
+  function handleRoadmapConnect(c: Connection) {
+    if (!c.source || !c.target) return;
+    if (c.source === c.target) return;
+    if (wouldCreateCycle(c.source, c.target)) return;
+    roadmapDirty = true;
+    draftModules = reindexModuleSortOrders(
+      draftModules.map((m) =>
+        m.id === c.target ? { ...m, parent_module_id: c.source } : m,
+      ),
+    );
+  }
+
+  function handleRoadmapDelete({
+    edges: delEdges,
+  }: {
+    edges: Edge[];
+    nodes: Node[];
+  }) {
+    const rootId = draftModules.find((m) => !m.parent_module_id)?.id;
+    if (!rootId) return;
+    for (const e of delEdges) {
+      roadmapDirty = true;
+      draftModules = reindexModuleSortOrders(
+        draftModules.map((m) =>
+          m.id === e.target ? { ...m, parent_module_id: rootId } : m,
+        ),
+      );
+    }
+  }
+
+  function isValidRoadmapConnection(conn: Connection | Edge): boolean {
+    if (conn.source === conn.target) return false;
+    return !wouldCreateCycle(conn.source, conn.target);
+  }
+
+  $effect(() => {
+    const program = data.program;
+    const modules = draftModules;
+    const sessionsByModule = draftSessionsByModule;
+    if (!program || modules.length === 0) {
+      nodes = [];
+      edges = [];
+      return;
+    }
+    const { nodes: rawNodes, edges: rawEdges } = layoutModuleNodesForFlowEditor(
+      modules,
+      {
+        programId: program.id,
+        userId: data.userId ?? "",
+        sessionsByModule,
+      },
+    );
+    const rootModuleId = modules.find((m) => !m.parent_module_id)?.id ?? "";
+    nodes = rawNodes.map((n) => {
+      const row = n.data.module as LearningModuleRow;
+      const mid = row.id;
+      const isRootModule = !row.parent_module_id;
+      return {
+        ...n,
+        deletable: false,
+        type: "moduleEditor",
+        data: {
+          module: row,
+          sessions: n.data.sessions as LearningSessionRow[],
+          todayIso: data.todayIso,
+          rootModuleId,
+          isRootModule,
+          parentSelectItems: isRootModule ? [] : parentSelectItemsForModule(mid),
+          onSetModuleParent: (parentValue: string) =>
+            setDraftModuleParent(mid, parentValue),
+          onUpdateModule: updateDraftModule,
+          onRemoveModule: removeDraftModuleTree,
+          onUpdateSession: updateDraftSession,
+          onRemoveSession: removeDraftSession,
+          onAddSession: addDraftSession,
+        },
+      };
+    });
+    edges = rawEdges;
+  });
+
+  function addModuleFromDialog() {
+    const title = newModuleTitle.trim();
+    if (!title) return;
+    const id = newTempModuleId();
+    let parent_module_id: string | null = null;
+    if (draftModules.length > 0) {
+      const raw = newModuleParentId.trim();
+      if (isUuid(raw) && draftModules.some((m) => m.id === raw)) {
+        parent_module_id = raw;
+      } else {
+        parent_module_id =
+          draftModules.find((m) => !m.parent_module_id)?.id ?? null;
+      }
+    }
+    const sort_order = draftModules.length;
+    roadmapDirty = true;
+    draftModules = [
+      ...draftModules,
+      {
+        id,
+        learning_program_id: params.programId,
+        parent_module_id,
+        title,
+        description: newModuleDescription.trim()
+          ? newModuleDescription.trim()
+          : null,
+        sort_order,
+        completed_at: null,
+        created_at: "",
+        updated_at: "",
+      },
+    ];
+    draftSessionsByModule = { ...draftSessionsByModule, [id]: [] };
+    draftModules = reindexModuleSortOrders(draftModules);
+    newModuleTitle = "";
+    newModuleDescription = "";
+    newModuleDialogOpen = false;
+  }
 
   let programReason = $state<"instrumental" | "intrinsic">("intrinsic");
   let aiBusy = $state(false);
@@ -110,34 +383,76 @@
   let deleteProgramDialogOpen = $state(false);
   let deleteProgramFormEl: HTMLFormElement | undefined = $state();
 
-  let pendingModuleDelete = $state<{ id: string; isRoot: boolean } | null>(
-    null,
-  );
-  let pendingSessionDeleteId = $state<string | null>(null);
   let pendingWeaknessDeleteId = $state<string | null>(null);
   let pendingFlashcardDeleteId = $state<string | null>(null);
   let pendingResourceDeleteId = $state<string | null>(null);
+  let newModuleDialogOpen = $state(false);
 
-  let sessionsDialogOpen = $state(false);
-  let sessionsDialogModuleId = $state<string | null>(null);
+  let addWeaknessOpen = $state(false);
+  let addFlashcardOpen = $state(false);
+  let addResourceOpen = $state(false);
+  let addWeaknessTitle = $state("");
+  let addWeaknessDescription = $state("");
+  let addWeaknessPriority = $state("0");
+  let addFlashcardFront = $state("");
+  let addFlashcardBack = $state("");
+  let addResourceTitle = $state("");
+  let addResourceUri = $state("");
+  let addResourceDescription = $state("");
 
-  const sessionsDialogModule = $derived(
-    sessionsDialogModuleId
-      ? (data.modules.find((m) => m.id === sessionsDialogModuleId) ?? null)
-      : null,
-  );
+  let editWeaknessId = $state<string | null>(null);
+  let editWeaknessTitle = $state("");
+  let editWeaknessDescription = $state("");
+  let editWeaknessPriority = $state("0");
+  let editFlashcardId = $state<string | null>(null);
+  let editFlashcardFront = $state("");
+  let editFlashcardBack = $state("");
+  let editResourceId = $state<string | null>(null);
+  let editResourceTitle = $state("");
+  let editResourceUri = $state("");
+  let editResourceDescription = $state("");
 
-  const sessionsDialogSessions = $derived(
-    sessionsDialogModuleId
-      ? (data.sessionsByModule[sessionsDialogModuleId] ?? [])
-      : [],
-  );
+  function openAddWeaknessDialog() {
+    addWeaknessTitle = "";
+    addWeaknessDescription = "";
+    addWeaknessPriority = "0";
+    addWeaknessOpen = true;
+  }
 
-  const moduleDeleteDialogDescription = $derived(
-    pendingModuleDelete?.isRoot
-      ? "Delete the root module? This removes every sub-module and their sessions."
-      : "Remove this module and its sessions?",
-  );
+  function openEditWeakness(w: ProgramWeaknessRow) {
+    editWeaknessId = w.id;
+    editWeaknessTitle = w.title;
+    editWeaknessDescription = w.description ?? "";
+    editWeaknessPriority = String(w.priority);
+  }
+
+  function openAddFlashcardDialog() {
+    addFlashcardFront = "";
+    addFlashcardBack = "";
+    addFlashcardOpen = true;
+  }
+
+  function openEditFlashcard(c: ProgramFlashcardRow) {
+    editFlashcardId = c.id;
+    editFlashcardFront = c.front_text;
+    editFlashcardBack = c.back_text;
+  }
+
+  function openAddResourceDialog() {
+    addResourceKind = "link";
+    addResourceTitle = "";
+    addResourceUri = "";
+    addResourceDescription = "";
+    addResourceOpen = true;
+  }
+
+  function openEditResource(r: MetalearningResourceRow) {
+    editResourceId = r.id;
+    editResourceKind = r.kind;
+    editResourceTitle = r.title;
+    editResourceUri = r.uri;
+    editResourceDescription = r.description ?? "";
+  }
 
   $effect(() => {
     const pr = data.program;
@@ -170,9 +485,10 @@
       actionKey?: string;
       onStart?: () => void;
       onDone?: () => void;
+      onSuccessExtra?: () => void | Promise<void>;
     },
   ) {
-    const { actionKey, onStart, onDone } = options ?? {};
+    const { actionKey, onStart, onDone, onSuccessExtra } = options ?? {};
     return dbActionToastEnhance(pendingMessage, successMessage, {
       onStart: () => {
         if (actionKey) pendingAction = actionKey;
@@ -182,7 +498,10 @@
         if (actionKey) pendingAction = null;
         onDone?.();
       },
-      onSuccess: afterProgramMutation,
+      onSuccess: async () => {
+        await afterProgramMutation();
+        await onSuccessExtra?.();
+      },
     });
   }
 </script>
@@ -289,8 +608,8 @@
             />
           </div>
 
-          <div class="flex flex-col gap-1.5">
-            <span class="text-sm font-medium">Reason to learn</span>
+          <fieldset class="flex flex-col gap-1.5 border-0 p-0">
+            <legend class="text-sm font-medium">Reason to learn</legend>
             <ToggleGroup.Root
               type="single"
               bind:value={programReason}
@@ -306,7 +625,7 @@
               >
             </ToggleGroup.Root>
             <input type="hidden" name="reason" value={programReason} />
-          </div>
+          </fieldset>
 
           <div class="flex flex-col gap-1.5">
             <label for="reason_description" class="text-sm font-medium"
@@ -459,134 +778,252 @@
       </div>
 
       <Tabs.Content value="roadmap" class="mt-2 flex flex-col gap-4">
-      <div>
-        <h3 class="text-foreground text-base font-semibold">Roadmap</h3>
-        <p class="text-muted-foreground mt-1 max-w-2xl text-sm">
-          Each program has one <strong class="text-foreground">root</strong> module;
-          other modules attach under a parent so the roadmap view can show a tree.
-          Mark sessions done when finished.
-        </p>
-      </div>
+        <div class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+          <div>
+            <h3 class="text-foreground text-base font-semibold">Roadmap</h3>
+            <p class="text-muted-foreground mt-1 max-w-2xl text-sm">
+              Drag from the bottom of a parent to the top of a child to connect
+              modules. Edits stay local until you save. Use the panel on the
+              canvas to add a module or save everything.
+            </p>
+          </div>
+          <form
+            bind:this={saveRoadmapFormEl}
+            method="POST"
+            action="?/saveRoadmapBatch"
+            class="flex shrink-0 flex-wrap items-center gap-2"
+            use:enhance={dbActionToastEnhance("Saving roadmap...", "Roadmap saved.", {
+              onSuccess: async () => {
+                roadmapDirty = false;
+                await afterProgramMutation();
+              },
+            })}
+            onsubmit={(e) => {
+              const err = validateRoadmapTree(draftModules);
+              if (err) {
+                e.preventDefault();
+                void import("svelte-sonner").then(({ toast }) => toast.error(err));
+              }
+            }}
+          >
+            <input type="hidden" name="payload" value={roadmapPayloadJson} />
+            <Button
+              type="submit"
+              variant="default"
+              class="sm:mt-0.5"
+              disabled={!roadmapDirty}
+            >
+              Save roadmap
+            </Button>
+          </form>
+        </div>
 
-      {#if data.modules.length === 0}
-        <p class="text-muted-foreground text-sm">
-          No modules yet. Add one below.
-        </p>
-      {/if}
+        {#if draftModules.length === 0}
+          <p class="text-muted-foreground text-sm">
+            No modules yet. Use <strong class="text-foreground">New module</strong> on
+            the canvas to create the first one, then save.
+          </p>
+        {/if}
 
-      {#each modulesInTreeOrder(data.modules) as mod (mod.id)}
-        {@const sessions = data.sessionsByModule[mod.id] ?? []}
+        <section
+          class="border-border/70 bg-background relative w-full overflow-hidden rounded-2xl border"
+          aria-label="Roadmap editor canvas"
+        >
+          <div
+            class="bg-background h-[min(28rem,60dvh)] w-full min-h-[20rem] sm:h-[min(34rem,65dvh)] sm:min-h-[24rem]"
+          >
+            {#if draftModules.length === 0}
+              <div
+                class="text-muted-foreground flex h-full items-center justify-center px-6 text-center text-sm"
+              >
+                Empty canvas — add a module from the panel above.
+              </div>
+            {:else}
+              <SvelteFlow
+                bind:nodes
+                bind:edges
+                {nodeTypes}
+                colorMode={flowColorMode}
+                nodesDraggable={false}
+                onconnect={handleRoadmapConnect}
+                ondelete={handleRoadmapDelete}
+                isValidConnection={isValidRoadmapConnection}
+                fitView
+                fitViewOptions={{ padding: 0.2, maxZoom: 1.35, minZoom: 0.2 }}
+                minZoom={0.15}
+                maxZoom={1.5}
+                proOptions={{ hideAttribution: true }}
+                class="!bg-background h-full w-full"
+                style="--background-color: var(--background);"
+              >
+                <Background gap={18} size={1} bgColor="var(--background)" />
+                <Controls
+                  position="top-left"
+                  class="!m-2 overflow-hidden rounded-xl border border-border/80 bg-card/95 shadow-sm"
+                />
+                <MiniMap
+                  position="bottom-right"
+                  class="!m-2 overflow-hidden rounded-xl border border-border/80 bg-card/90"
+                />
+                <Panel position="top-right">
+                  <div class="flex flex-col gap-2 rounded-xl border border-border/80 bg-card/95 p-2 shadow-sm">
+                    <Button
+                      type="button"
+                      size="sm"
+                      class="w-full"
+                      onclick={() => (newModuleDialogOpen = true)}
+                    >
+                      New module
+                    </Button>
+                  </div>
+                </Panel>
+              </SvelteFlow>
+            {/if}
+          </div>
+        </section>
+
+        <Dialog.Root bind:open={newModuleDialogOpen}>
+          <Dialog.Content class="sm:max-w-lg">
+            <Dialog.Header>
+              <Dialog.Title>New module</Dialog.Title>
+              <Dialog.Description>
+                Attach under the program root or pick a parent module. Changes apply
+                to the draft until you save the roadmap.
+              </Dialog.Description>
+            </Dialog.Header>
+            <div class="flex flex-col gap-3">
+              {#if draftModules.length > 0}
+                <div class="flex flex-col gap-1.5">
+                  <label
+                    for="new-mod-parent"
+                    class="text-foreground text-sm font-medium">Parent</label
+                  >
+                  <Select.Root
+                    type="single"
+                    bind:value={newModuleParentId}
+                    items={parentModuleSelectItems}
+                  >
+                    <Select.Trigger id="new-mod-parent" class="w-full min-w-0">
+                      {parentModuleTriggerLabel}
+                    </Select.Trigger>
+                    <Select.Content>
+                      {#each parentModuleSelectItems as item (item.value)}
+                        <Select.Item value={item.value} label={item.label} />
+                      {/each}
+                    </Select.Content>
+                  </Select.Root>
+                </div>
+              {:else}
+                <p class="text-muted-foreground text-xs">
+                  This will be the program root module.
+                </p>
+              {/if}
+              <div class="flex flex-col gap-1.5">
+                <label
+                  for="new-mod-title"
+                  class="text-foreground text-sm font-medium">Title</label
+                >
+                <Input
+                  id="new-mod-title"
+                  bind:value={newModuleTitle}
+                  maxlength={200}
+                  placeholder="Module title (e.g. Music theory)"
+                />
+              </div>
+              <div class="flex flex-col gap-1.5">
+                <label
+                  for="new-mod-desc"
+                  class="text-foreground text-sm font-medium">Description</label
+                >
+                <textarea
+                  id="new-mod-desc"
+                  bind:value={newModuleDescription}
+                  rows={2}
+                  maxlength={4000}
+                  placeholder="Optional"
+                  class="border-input bg-input/30 focus-visible:border-ring focus-visible:ring-ring/50 min-h-[4rem] w-full resize-y rounded-2xl border px-3 py-2 text-sm focus-visible:ring-[3px] focus-visible:outline-none"
+                ></textarea>
+              </div>
+              <div class="flex flex-wrap justify-end gap-2 pt-1">
+                <Button
+                  type="button"
+                  variant="outline"
+                  onclick={() => (newModuleDialogOpen = false)}
+                >
+                  Cancel
+                </Button>
+                <Button type="button" onclick={addModuleFromDialog}>Add module</Button>
+              </div>
+            </div>
+          </Dialog.Content>
+        </Dialog.Root>
+      </Tabs.Content>
+
+      <Tabs.Content value="weaknesses" class="mt-2">
         <Card>
           <CardHeader
-            class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between"
+            class="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between"
           >
             <div>
-              <div class="flex flex-wrap items-center gap-2">
-                <CardTitle class="text-base">{mod.title}</CardTitle>
-                {#if !mod.parent_module_id}
-                  <Badge
-                    variant="secondary"
-                    class="text-[10px] tracking-wide uppercase">Root</Badge
-                  >
-                {/if}
-                {#if mod.completed_at}
-                  <Badge variant="outline" class="text-xs">Module done</Badge>
-                {/if}
-              </div>
-              {#if mod.description}
-                <CardDescription class="mt-1">{mod.description}</CardDescription
-                >
-              {/if}
+              <CardTitle class="text-lg">Weaknesses</CardTitle>
+              <CardDescription>
+                Things to bias extra sessions toward—tracked for adaptation, not
+                scoring.
+              </CardDescription>
             </div>
-            <form
-              id={`delete-module-form-${mod.id}`}
-              method="POST"
-              action="?/deleteModule"
-              use:enhance={dbActionToast(
-                "Removing module...",
-                "Module removed.",
-              )}
+            <Button
+              type="button"
+              class="shrink-0"
+              onclick={openAddWeaknessDialog}
             >
-              <input type="hidden" name="module_id" value={mod.id} />
-              <Button
-                type="button"
-                variant="destructive"
-                size="sm"
-                onclick={() =>
-                  (pendingModuleDelete = {
-                    id: mod.id,
-                    isRoot: !mod.parent_module_id,
-                  })}
-              >
-                Remove module
-              </Button>
-            </form>
+              Add weakness
+            </Button>
           </CardHeader>
-          <Separator />
-          <CardContent class="space-y-6 pt-6">
-            {#if sessions.length === 0}
-              <p class="text-muted-foreground text-sm">No sessions yet.</p>
+          <CardContent class="space-y-6">
+            {#if data.weaknesses.length === 0}
+              <p class="text-muted-foreground text-sm">None yet.</p>
             {:else}
               <ul class="space-y-3">
-                {#each sessions as s (s.id)}
-                  {@const sessionDone = s.status === "completed"}
+                {#each data.weaknesses as w (w.id)}
                   <li
-                    class="border-border/80 flex flex-col gap-2 rounded-xl border px-3 py-3 sm:flex-row sm:items-center sm:justify-between"
-                    class:opacity-75={sessionDone}
+                    class="border-border/80 flex flex-col gap-2 rounded-xl border px-3 py-3 sm:flex-row sm:items-start sm:justify-between"
                   >
-                    <div class="min-w-0 flex-1">
-                      <div class="flex flex-wrap items-center gap-2">
-                        <span
-                          class="text-foreground font-medium"
-                          class:line-through={sessionDone}>{s.name}</span
-                        >
-                        <Badge variant="secondary" class="text-xs capitalize">
-                          {SESSION_TYPE_LABEL[s.session_type]}
-                        </Badge>
-                        <Badge variant="outline" class="text-xs">
-                          {s.status.replace("_", " ")}
-                        </Badge>
-                      </div>
-                      <p
-                        class="text-muted-foreground mt-1 tabular-nums text-xs"
-                      >
-                        {s.planned_start_date} → {s.planned_end_date}
-                        {#if s.estimated_duration_minutes}
-                          · ~{s.estimated_duration_minutes} min
-                        {/if}
+                    <div>
+                      <p class="text-foreground font-medium">{w.title}</p>
+                      {#if w.description}
+                        <p class="text-muted-foreground mt-1 text-sm">
+                          {w.description}
+                        </p>
+                      {/if}
+                      <p class="text-muted-foreground mt-2 text-xs">
+                        Priority {w.priority}
                       </p>
                     </div>
-                    <div class="flex flex-wrap gap-2">
+                    <div class="flex shrink-0 items-center gap-1.5">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onclick={() => openEditWeakness(w)}
+                      >
+                        <PencilIcon class="mr-1 size-3.5" />
+                        Edit
+                      </Button>
                       <form
+                        id={`delete-weakness-form-${w.id}`}
                         method="POST"
-                        action="?/toggleSessionComplete"
+                        action="?/deleteWeakness"
                         use:enhance={dbActionToast(
-                          "Updating session…",
-                          sessionDone
-                            ? "Session reopened."
-                            : "Session marked done.",
+                          "Removing weakness...",
+                          "Weakness removed.",
                         )}
                       >
-                        <input type="hidden" name="session_id" value={s.id} />
-                        <Button type="submit" variant="secondary" size="sm">
-                          {sessionDone ? "Reopen" : "Done"}
-                        </Button>
-                      </form>
-                      <form
-                        id={`delete-session-form-${s.id}`}
-                        method="POST"
-                        action="?/deleteSession"
-                        use:enhance={dbActionToast(
-                          "Removing session...",
-                          "Session removed.",
-                        )}
-                      >
-                        <input type="hidden" name="session_id" value={s.id} />
+                        <input type="hidden" name="weakness_id" value={w.id} />
                         <Button
                           type="button"
                           variant="destructive"
                           size="sm"
-                          onclick={() => (pendingSessionDeleteId = s.id)}
+                          onclick={() => (pendingWeaknessDeleteId = w.id)}
                         >
                           Remove
                         </Button>
@@ -596,380 +1033,680 @@
                 {/each}
               </ul>
             {/if}
-
-            <div class="bg-muted/40 rounded-xl p-4">
-              <p class="text-foreground mb-3 text-sm font-medium">
-                Add session
-              </p>
-              <form
-                method="POST"
-                action="?/addSession"
-                class="flex flex-col gap-3"
-                use:enhance={dbActionToast(
-                  "Adding session...",
-                  "Session scheduled.",
-                )}
-              >
-                <input type="hidden" name="module_id" value={mod.id} />
-                <Input
-                  name="name"
-                  required
-                  maxlength={200}
-                  placeholder="Session name"
-                />
-                <Select.Root
-                  type="single"
-                  name="session_type"
-                  bind:value={sessionTypeByModuleId[mod.id]}
-                  required
-                  items={[...SESSION_TYPE_ITEMS]}
-                >
-                  <Select.Trigger class="w-full min-w-0">
-                    {SESSION_TYPE_ITEMS.find(
-                      (i) => i.value === sessionTypeByModuleId[mod.id],
-                    )?.label ?? "Study"}
-                  </Select.Trigger>
-                  <Select.Content>
-                    {#each SESSION_TYPE_ITEMS as st (st.value)}
-                      <Select.Item value={st.value} label={st.label} />
-                    {/each}
-                  </Select.Content>
-                </Select.Root>
-                <div class="grid gap-3 sm:grid-cols-2">
-                  <DatePopoverField
-                    id={`ps-${mod.id}`}
-                    label="Planned start"
-                    name="planned_start_date"
-                    bind:value={plannedStartByModuleId[mod.id]}
-                    required
-                    labelClass="text-muted-foreground text-xs"
-                  />
-                  <DatePopoverField
-                    id={`pe-${mod.id}`}
-                    label="Planned end"
-                    name="planned_end_date"
-                    bind:value={plannedEndByModuleId[mod.id]}
-                    required
-                    labelClass="text-muted-foreground text-xs"
-                  />
-                </div>
-                <Input
-                  name="estimated_duration_minutes"
-                  type="number"
-                  min={1}
-                  placeholder="Est. minutes (optional)"
-                />
-                <Button type="submit" variant="secondary" size="sm"
-                  >Add session</Button
-                >
-              </form>
-            </div>
           </CardContent>
         </Card>
-      {/each}
 
-      <Card>
-        <CardHeader>
-          <CardTitle class="text-base">New module</CardTitle>
-          <CardDescription
-            >Attach under the program root or pick a parent module.</CardDescription
-          >
-        </CardHeader>
-        <CardContent>
-          <form
-            method="POST"
-            action="?/addModule"
-            class="flex flex-col gap-3"
-            use:enhance={dbActionToast("Adding module...", "Module added.")}
-          >
-            {#if data.modules.length > 0}
+        <Dialog.Root
+          bind:open={addWeaknessOpen}
+          onOpenChange={(o) => {
+            if (!o) addWeaknessOpen = false;
+          }}
+        >
+          <Dialog.Content class="sm:max-w-lg">
+            <Dialog.Header>
+              <Dialog.Title>Add weakness</Dialog.Title>
+              <Dialog.Description>
+                Track something to bias extra sessions toward.
+              </Dialog.Description>
+            </Dialog.Header>
+            <form
+              method="POST"
+              action="?/addWeakness"
+              class="flex flex-col gap-3"
+              use:enhance={dbActionToast("Adding weakness...", "Weakness added.", {
+                onSuccessExtra: () => {
+                  addWeaknessOpen = false;
+                },
+              })}
+            >
               <div class="flex flex-col gap-1.5">
                 <label
-                  for="new-mod-parent"
-                  class="text-foreground text-sm font-medium">Parent</label
+                  for="add-w-title"
+                  class="text-foreground text-sm font-medium">Title</label
+                >
+                <Input
+                  id="add-w-title"
+                  name="title"
+                  required
+                  maxlength={200}
+                  placeholder="Title"
+                  bind:value={addWeaknessTitle}
+                />
+              </div>
+              <div class="flex flex-col gap-1.5">
+                <label
+                  for="add-w-desc"
+                  class="text-foreground text-sm font-medium">Description</label
+                >
+                <textarea
+                  id="add-w-desc"
+                  name="description"
+                  rows={2}
+                  maxlength={4000}
+                  placeholder="Description"
+                  bind:value={addWeaknessDescription}
+                  class="border-input bg-input/30 focus-visible:border-ring focus-visible:ring-ring/50 min-h-[4rem] w-full resize-y rounded-2xl border px-3 py-2 text-sm focus-visible:ring-[3px] focus-visible:outline-none"
+                ></textarea>
+              </div>
+              <div class="flex flex-col gap-1.5">
+                <label
+                  for="add-w-priority"
+                  class="text-foreground text-sm font-medium">Priority</label
+                >
+                <Input
+                  id="add-w-priority"
+                  name="priority"
+                  type="number"
+                  min={0}
+                  max={100}
+                  bind:value={addWeaknessPriority}
+                  placeholder="0–100"
+                />
+              </div>
+              <div class="flex flex-wrap justify-end gap-2 pt-1">
+                <Button
+                  type="button"
+                  variant="outline"
+                  onclick={() => (addWeaknessOpen = false)}
+                >
+                  Cancel
+                </Button>
+                <Button type="submit">Add weakness</Button>
+              </div>
+            </form>
+          </Dialog.Content>
+        </Dialog.Root>
+
+        <Dialog.Root
+          open={editWeaknessId !== null}
+          onOpenChange={(o) => {
+            if (!o) editWeaknessId = null;
+          }}
+        >
+          <Dialog.Content class="sm:max-w-lg">
+            <Dialog.Header>
+              <Dialog.Title>Edit weakness</Dialog.Title>
+              <Dialog.Description>
+                Update title, description, or priority.
+              </Dialog.Description>
+            </Dialog.Header>
+            {#if editWeaknessId}
+              <form
+                method="POST"
+                action="?/updateWeakness"
+                class="flex flex-col gap-3"
+                use:enhance={dbActionToast(
+                  "Saving weakness...",
+                  "Weakness updated.",
+                  {
+                    onSuccessExtra: () => {
+                      editWeaknessId = null;
+                    },
+                  },
+                )}
+              >
+                <input type="hidden" name="weakness_id" value={editWeaknessId} />
+                <div class="flex flex-col gap-1.5">
+                  <label
+                    for="edit-w-title"
+                    class="text-foreground text-sm font-medium">Title</label
+                  >
+                  <Input
+                    id="edit-w-title"
+                    name="title"
+                    required
+                    maxlength={200}
+                    placeholder="Title"
+                    bind:value={editWeaknessTitle}
+                  />
+                </div>
+                <div class="flex flex-col gap-1.5">
+                  <label
+                    for="edit-w-desc"
+                    class="text-foreground text-sm font-medium">Description</label
+                  >
+                  <textarea
+                    id="edit-w-desc"
+                    name="description"
+                    rows={2}
+                    maxlength={4000}
+                    placeholder="Description"
+                    bind:value={editWeaknessDescription}
+                    class="border-input bg-input/30 focus-visible:border-ring focus-visible:ring-ring/50 min-h-[4rem] w-full resize-y rounded-2xl border px-3 py-2 text-sm focus-visible:ring-[3px] focus-visible:outline-none"
+                  ></textarea>
+                </div>
+                <div class="flex flex-col gap-1.5">
+                  <label
+                    for="edit-w-priority"
+                    class="text-foreground text-sm font-medium">Priority</label
+                  >
+                  <Input
+                    id="edit-w-priority"
+                    name="priority"
+                    type="number"
+                    min={0}
+                    max={100}
+                    bind:value={editWeaknessPriority}
+                    placeholder="0–100"
+                  />
+                </div>
+                <div class="flex flex-wrap justify-end gap-2 pt-1">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onclick={() => (editWeaknessId = null)}
+                  >
+                    Cancel
+                  </Button>
+                  <Button type="submit">Save</Button>
+                </div>
+              </form>
+            {/if}
+          </Dialog.Content>
+        </Dialog.Root>
+      </Tabs.Content>
+
+      <Tabs.Content value="flashcards" class="mt-2">
+        <Card>
+          <CardHeader
+            class="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between"
+          >
+            <div>
+              <CardTitle class="text-lg">Flashcards</CardTitle>
+              <CardDescription
+                >Pool for flashcard sessions (shuffle in the app).</CardDescription
+              >
+            </div>
+            <Button
+              type="button"
+              class="shrink-0"
+              onclick={openAddFlashcardDialog}
+            >
+              Add flashcard
+            </Button>
+          </CardHeader>
+          <CardContent class="space-y-6">
+            {#if data.flashcards.length === 0}
+              <p class="text-muted-foreground text-sm">No cards yet.</p>
+            {:else}
+              <ul class="space-y-3">
+                {#each data.flashcards as c (c.id)}
+                  <li
+                    class="border-border/80 flex flex-col gap-2 rounded-xl border px-3 py-3 sm:flex-row sm:items-start sm:justify-between"
+                  >
+                    <div class="min-w-0 text-sm">
+                      <p class="text-foreground font-medium">{c.front_text}</p>
+                      <p class="text-muted-foreground mt-1">{c.back_text}</p>
+                    </div>
+                    <div class="flex shrink-0 items-center gap-1.5">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onclick={() => openEditFlashcard(c)}
+                      >
+                        <PencilIcon class="mr-1 size-3.5" />
+                        Edit
+                      </Button>
+                      <form
+                        id={`delete-flashcard-form-${c.id}`}
+                        method="POST"
+                        action="?/deleteFlashcard"
+                        use:enhance={dbActionToast(
+                          "Removing flashcard...",
+                          "Flashcard removed.",
+                        )}
+                      >
+                        <input type="hidden" name="flashcard_id" value={c.id} />
+                        <Button
+                          type="button"
+                          variant="destructive"
+                          size="sm"
+                          onclick={() => (pendingFlashcardDeleteId = c.id)}
+                        >
+                          Remove
+                        </Button>
+                      </form>
+                    </div>
+                  </li>
+                {/each}
+              </ul>
+            {/if}
+          </CardContent>
+        </Card>
+
+        <Dialog.Root
+          bind:open={addFlashcardOpen}
+          onOpenChange={(o) => {
+            if (!o) addFlashcardOpen = false;
+          }}
+        >
+          <Dialog.Content class="sm:max-w-lg">
+            <Dialog.Header>
+              <Dialog.Title>Add flashcard</Dialog.Title>
+              <Dialog.Description>
+                Front and back text for the program pool.
+              </Dialog.Description>
+            </Dialog.Header>
+            <form
+              method="POST"
+              action="?/addFlashcard"
+              class="flex flex-col gap-3"
+              use:enhance={dbActionToast(
+                "Adding flashcard...",
+                "Flashcard added.",
+                {
+                  onSuccessExtra: () => {
+                    addFlashcardOpen = false;
+                  },
+                },
+              )}
+            >
+              <div class="flex flex-col gap-1.5">
+                <label
+                  for="add-fc-front"
+                  class="text-foreground text-sm font-medium">Front</label
+                >
+                <textarea
+                  id="add-fc-front"
+                  name="front_text"
+                  required
+                  rows={2}
+                  maxlength={4000}
+                  placeholder="Front"
+                  bind:value={addFlashcardFront}
+                  class="border-input bg-input/30 focus-visible:border-ring focus-visible:ring-ring/50 min-h-[4rem] w-full resize-y rounded-2xl border px-3 py-2 text-sm focus-visible:ring-[3px] focus-visible:outline-none"
+                ></textarea>
+              </div>
+              <div class="flex flex-col gap-1.5">
+                <label
+                  for="add-fc-back"
+                  class="text-foreground text-sm font-medium">Back</label
+                >
+                <textarea
+                  id="add-fc-back"
+                  name="back_text"
+                  required
+                  rows={2}
+                  maxlength={4000}
+                  placeholder="Back"
+                  bind:value={addFlashcardBack}
+                  class="border-input bg-input/30 focus-visible:border-ring focus-visible:ring-ring/50 min-h-[4rem] w-full resize-y rounded-2xl border px-3 py-2 text-sm focus-visible:ring-[3px] focus-visible:outline-none"
+                ></textarea>
+              </div>
+              <div class="flex flex-wrap justify-end gap-2 pt-1">
+                <Button
+                  type="button"
+                  variant="outline"
+                  onclick={() => (addFlashcardOpen = false)}
+                >
+                  Cancel
+                </Button>
+                <Button type="submit">Add flashcard</Button>
+              </div>
+            </form>
+          </Dialog.Content>
+        </Dialog.Root>
+
+        <Dialog.Root
+          open={editFlashcardId !== null}
+          onOpenChange={(o) => {
+            if (!o) editFlashcardId = null;
+          }}
+        >
+          <Dialog.Content class="sm:max-w-lg">
+            <Dialog.Header>
+              <Dialog.Title>Edit flashcard</Dialog.Title>
+              <Dialog.Description>
+                Update the front and back of this card.
+              </Dialog.Description>
+            </Dialog.Header>
+            {#if editFlashcardId}
+              <form
+                method="POST"
+                action="?/updateFlashcard"
+                class="flex flex-col gap-3"
+                use:enhance={dbActionToast(
+                  "Saving flashcard...",
+                  "Flashcard updated.",
+                  {
+                    onSuccessExtra: () => {
+                      editFlashcardId = null;
+                    },
+                  },
+                )}
+              >
+                <input type="hidden" name="flashcard_id" value={editFlashcardId} />
+                <div class="flex flex-col gap-1.5">
+                  <label
+                    for="edit-fc-front"
+                    class="text-foreground text-sm font-medium">Front</label
+                  >
+                  <textarea
+                    id="edit-fc-front"
+                    name="front_text"
+                    required
+                    rows={2}
+                    maxlength={4000}
+                    placeholder="Front"
+                    bind:value={editFlashcardFront}
+                    class="border-input bg-input/30 focus-visible:border-ring focus-visible:ring-ring/50 min-h-[4rem] w-full resize-y rounded-2xl border px-3 py-2 text-sm focus-visible:ring-[3px] focus-visible:outline-none"
+                  ></textarea>
+                </div>
+                <div class="flex flex-col gap-1.5">
+                  <label
+                    for="edit-fc-back"
+                    class="text-foreground text-sm font-medium">Back</label
+                  >
+                  <textarea
+                    id="edit-fc-back"
+                    name="back_text"
+                    required
+                    rows={2}
+                    maxlength={4000}
+                    placeholder="Back"
+                    bind:value={editFlashcardBack}
+                    class="border-input bg-input/30 focus-visible:border-ring focus-visible:ring-ring/50 min-h-[4rem] w-full resize-y rounded-2xl border px-3 py-2 text-sm focus-visible:ring-[3px] focus-visible:outline-none"
+                  ></textarea>
+                </div>
+                <div class="flex flex-wrap justify-end gap-2 pt-1">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onclick={() => (editFlashcardId = null)}
+                  >
+                    Cancel
+                  </Button>
+                  <Button type="submit">Save</Button>
+                </div>
+              </form>
+            {/if}
+          </Dialog.Content>
+        </Dialog.Root>
+      </Tabs.Content>
+
+      <Tabs.Content value="resources" class="mt-2">
+        <Card>
+          <CardHeader
+            class="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between"
+          >
+            <div>
+              <CardTitle class="text-lg">Metalearning resources</CardTitle>
+              <CardDescription
+                >Documents, links, or pictures for this program.</CardDescription
+              >
+            </div>
+            <Button
+              type="button"
+              class="shrink-0"
+              onclick={openAddResourceDialog}
+            >
+              Add resource
+            </Button>
+          </CardHeader>
+          <CardContent class="space-y-6">
+            {#if data.resources.length === 0}
+              <p class="text-muted-foreground text-sm">None yet.</p>
+            {:else}
+              <ul class="space-y-3">
+                {#each data.resources as r (r.id)}
+                  <li
+                    class="border-border/80 flex flex-col gap-2 rounded-xl border px-3 py-3 sm:flex-row sm:items-start sm:justify-between"
+                  >
+                    <div class="min-w-0 text-sm">
+                      <p class="text-foreground font-medium">{r.title}</p>
+                      <p class="text-muted-foreground mt-1 break-all">{r.uri}</p>
+                      <Badge variant="outline" class="mt-2 capitalize"
+                        >{r.kind}</Badge
+                      >
+                    </div>
+                    <div class="flex shrink-0 items-center gap-1.5">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onclick={() => openEditResource(r)}
+                      >
+                        <PencilIcon class="mr-1 size-3.5" />
+                        Edit
+                      </Button>
+                      <form
+                        id={`delete-resource-form-${r.id}`}
+                        method="POST"
+                        action="?/deleteResource"
+                        use:enhance={dbActionToast(
+                          "Removing resource...",
+                          "Resource removed.",
+                        )}
+                      >
+                        <input type="hidden" name="resource_id" value={r.id} />
+                        <Button
+                          type="button"
+                          variant="destructive"
+                          size="sm"
+                          onclick={() => (pendingResourceDeleteId = r.id)}
+                        >
+                          Remove
+                        </Button>
+                      </form>
+                    </div>
+                  </li>
+                {/each}
+              </ul>
+            {/if}
+          </CardContent>
+        </Card>
+
+        <Dialog.Root
+          bind:open={addResourceOpen}
+          onOpenChange={(o) => {
+            if (!o) addResourceOpen = false;
+          }}
+        >
+          <Dialog.Content class="sm:max-w-lg">
+            <Dialog.Header>
+              <Dialog.Title>Add resource</Dialog.Title>
+              <Dialog.Description>
+                Link, document, or picture for metalearning.
+              </Dialog.Description>
+            </Dialog.Header>
+            <form
+              method="POST"
+              action="?/addResource"
+              class="flex flex-col gap-3"
+              use:enhance={dbActionToast("Adding resource...", "Resource added.", {
+                onSuccessExtra: () => {
+                  addResourceOpen = false;
+                },
+              })}
+            >
+              <div class="flex flex-col gap-1.5">
+                <label
+                  for="add-res-kind"
+                  class="text-foreground text-sm font-medium">Type</label
                 >
                 <Select.Root
                   type="single"
-                  name="parent_module_id"
-                  bind:value={newModuleParentId}
-                  items={parentModuleSelectItems}
+                  name="kind"
+                  bind:value={addResourceKind}
+                  required
+                  items={[...RESOURCE_KIND_ITEMS]}
                 >
-                  <Select.Trigger id="new-mod-parent" class="w-full min-w-0">
-                    {parentModuleTriggerLabel}
+                  <Select.Trigger id="add-res-kind" class="w-full min-w-0">
+                    {addResourceKindLabel}
                   </Select.Trigger>
                   <Select.Content>
-                    {#each parentModuleSelectItems as item (item.value)}
-                      <Select.Item value={item.value} label={item.label} />
+                    {#each RESOURCE_KIND_ITEMS as rk (rk.value)}
+                      <Select.Item value={rk.value} label={rk.label} />
                     {/each}
                   </Select.Content>
                 </Select.Root>
               </div>
-            {:else}
-              <p class="text-muted-foreground text-xs">
-                This will be the program root module.
-              </p>
+              <div class="flex flex-col gap-1.5">
+                <label
+                  for="add-res-title"
+                  class="text-foreground text-sm font-medium">Title</label
+                >
+                <Input
+                  id="add-res-title"
+                  name="title"
+                  required
+                  maxlength={200}
+                  placeholder="Title"
+                  bind:value={addResourceTitle}
+                />
+              </div>
+              <div class="flex flex-col gap-1.5">
+                <label
+                  for="add-res-uri"
+                  class="text-foreground text-sm font-medium">URL or path</label
+                >
+                <Input
+                  id="add-res-uri"
+                  name="uri"
+                  required
+                  maxlength={2000}
+                  placeholder="URL or storage path"
+                  bind:value={addResourceUri}
+                />
+              </div>
+              <div class="flex flex-col gap-1.5">
+                <label
+                  for="add-res-desc"
+                  class="text-foreground text-sm font-medium">Description</label
+                >
+                <textarea
+                  id="add-res-desc"
+                  name="description"
+                  rows={2}
+                  maxlength={4000}
+                  placeholder="Optional"
+                  bind:value={addResourceDescription}
+                  class="border-input bg-input/30 focus-visible:border-ring focus-visible:ring-ring/50 min-h-[4rem] w-full resize-y rounded-2xl border px-3 py-2 text-sm focus-visible:ring-[3px] focus-visible:outline-none"
+                ></textarea>
+              </div>
+              <div class="flex flex-wrap justify-end gap-2 pt-1">
+                <Button
+                  type="button"
+                  variant="outline"
+                  onclick={() => (addResourceOpen = false)}
+                >
+                  Cancel
+                </Button>
+                <Button type="submit">Add resource</Button>
+              </div>
+            </form>
+          </Dialog.Content>
+        </Dialog.Root>
+
+        <Dialog.Root
+          open={editResourceId !== null}
+          onOpenChange={(o) => {
+            if (!o) editResourceId = null;
+          }}
+        >
+          <Dialog.Content class="sm:max-w-lg">
+            <Dialog.Header>
+              <Dialog.Title>Edit resource</Dialog.Title>
+              <Dialog.Description>
+                Update type, title, link, or description.
+              </Dialog.Description>
+            </Dialog.Header>
+            {#if editResourceId}
+              <form
+                method="POST"
+                action="?/updateResource"
+                class="flex flex-col gap-3"
+                use:enhance={dbActionToast(
+                  "Saving resource...",
+                  "Resource updated.",
+                  {
+                    onSuccessExtra: () => {
+                      editResourceId = null;
+                    },
+                  },
+                )}
+              >
+                <input type="hidden" name="resource_id" value={editResourceId} />
+                <div class="flex flex-col gap-1.5">
+                  <label
+                    for="edit-res-kind"
+                    class="text-foreground text-sm font-medium">Type</label
+                  >
+                  <Select.Root
+                    type="single"
+                    name="kind"
+                    bind:value={editResourceKind}
+                    required
+                    items={[...RESOURCE_KIND_ITEMS]}
+                  >
+                    <Select.Trigger id="edit-res-kind" class="w-full min-w-0">
+                      {editResourceKindLabel}
+                    </Select.Trigger>
+                    <Select.Content>
+                      {#each RESOURCE_KIND_ITEMS as rk (rk.value)}
+                        <Select.Item value={rk.value} label={rk.label} />
+                      {/each}
+                    </Select.Content>
+                  </Select.Root>
+                </div>
+                <div class="flex flex-col gap-1.5">
+                  <label
+                    for="edit-res-title"
+                    class="text-foreground text-sm font-medium">Title</label
+                  >
+                  <Input
+                    id="edit-res-title"
+                    name="title"
+                    required
+                    maxlength={200}
+                    placeholder="Title"
+                    bind:value={editResourceTitle}
+                  />
+                </div>
+                <div class="flex flex-col gap-1.5">
+                  <label
+                    for="edit-res-uri"
+                    class="text-foreground text-sm font-medium">URL or path</label
+                  >
+                  <Input
+                    id="edit-res-uri"
+                    name="uri"
+                    required
+                    maxlength={2000}
+                    placeholder="URL or storage path"
+                    bind:value={editResourceUri}
+                  />
+                </div>
+                <div class="flex flex-col gap-1.5">
+                  <label
+                    for="edit-res-desc"
+                    class="text-foreground text-sm font-medium">Description</label
+                  >
+                  <textarea
+                    id="edit-res-desc"
+                    name="description"
+                    rows={2}
+                    maxlength={4000}
+                    placeholder="Optional"
+                    bind:value={editResourceDescription}
+                    class="border-input bg-input/30 focus-visible:border-ring focus-visible:ring-ring/50 min-h-[4rem] w-full resize-y rounded-2xl border px-3 py-2 text-sm focus-visible:ring-[3px] focus-visible:outline-none"
+                  ></textarea>
+                </div>
+                <div class="flex flex-wrap justify-end gap-2 pt-1">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onclick={() => (editResourceId = null)}
+                  >
+                    Cancel
+                  </Button>
+                  <Button type="submit">Save</Button>
+                </div>
+              </form>
             {/if}
-            <Input
-              name="title"
-              required
-              maxlength={200}
-              placeholder="Module title (e.g. Music theory)"
-            />
-            <textarea
-              name="description"
-              rows={2}
-              maxlength={4000}
-              placeholder="Optional description"
-              class="border-input bg-input/30 focus-visible:border-ring focus-visible:ring-ring/50 min-h-[4rem] w-full resize-y rounded-2xl border px-3 py-2 text-sm focus-visible:ring-[3px] focus-visible:outline-none"
-            ></textarea>
-            <Button type="submit" class="w-fit">Add module</Button>
-          </form>
-        </CardContent>
-      </Card>
-      </Tabs.Content>
-
-      <Tabs.Content value="weaknesses" class="mt-2">
-    <Card>
-      <CardHeader>
-        <CardTitle class="text-lg">Weaknesses</CardTitle>
-        <CardDescription>
-          Things to bias extra sessions toward—tracked for adaptation, not
-          scoring.
-        </CardDescription>
-      </CardHeader>
-      <CardContent class="space-y-6">
-        {#if data.weaknesses.length === 0}
-          <p class="text-muted-foreground text-sm">None yet.</p>
-        {:else}
-          <ul class="space-y-3">
-            {#each data.weaknesses as w (w.id)}
-              <li
-                class="border-border/80 flex flex-col gap-2 rounded-xl border px-3 py-3 sm:flex-row sm:items-start sm:justify-between"
-              >
-                <div>
-                  <p class="text-foreground font-medium">{w.title}</p>
-                  {#if w.description}
-                    <p class="text-muted-foreground mt-1 text-sm">
-                      {w.description}
-                    </p>
-                  {/if}
-                  <p class="text-muted-foreground mt-2 text-xs">
-                    Priority {w.priority}
-                  </p>
-                </div>
-                <form
-                  id={`delete-weakness-form-${w.id}`}
-                  method="POST"
-                  action="?/deleteWeakness"
-                  use:enhance={dbActionToast(
-                    "Removing weakness...",
-                    "Weakness removed.",
-                  )}
-                >
-                  <input type="hidden" name="weakness_id" value={w.id} />
-                  <Button
-                    type="button"
-                    variant="destructive"
-                    size="sm"
-                    onclick={() => (pendingWeaknessDeleteId = w.id)}
-                  >
-                    Remove
-                  </Button>
-                </form>
-              </li>
-            {/each}
-          </ul>
-        {/if}
-
-        <form
-          method="POST"
-          action="?/addWeakness"
-          class="flex flex-col gap-3 border-t pt-6"
-          use:enhance={dbActionToast("Adding weakness...", "Weakness added.")}
-        >
-          <Input name="title" required maxlength={200} placeholder="Title" />
-          <textarea
-            name="description"
-            rows={2}
-            maxlength={4000}
-            placeholder="Description"
-            class="border-input bg-input/30 focus-visible:border-ring focus-visible:ring-ring/50 min-h-[4rem] w-full resize-y rounded-2xl border px-3 py-2 text-sm focus-visible:ring-[3px] focus-visible:outline-none"
-          ></textarea>
-          <Input
-            name="priority"
-            type="number"
-            min={0}
-            max={100}
-            value="0"
-            placeholder="Priority (0–100)"
-          />
-          <Button type="submit" class="w-fit">Add weakness</Button>
-        </form>
-      </CardContent>
-    </Card>
-      </Tabs.Content>
-
-      <Tabs.Content value="flashcards" class="mt-2">
-    <Card>
-      <CardHeader>
-        <CardTitle class="text-lg">Flashcards</CardTitle>
-        <CardDescription
-          >Pool for flashcard sessions (shuffle in the app).</CardDescription
-        >
-      </CardHeader>
-      <CardContent class="space-y-6">
-        {#if data.flashcards.length === 0}
-          <p class="text-muted-foreground text-sm">No cards yet.</p>
-        {:else}
-          <ul class="space-y-3">
-            {#each data.flashcards as c (c.id)}
-              <li
-                class="border-border/80 flex flex-col gap-2 rounded-xl border px-3 py-3 sm:flex-row sm:items-start sm:justify-between"
-              >
-                <div class="min-w-0 text-sm">
-                  <p class="text-foreground font-medium">{c.front_text}</p>
-                  <p class="text-muted-foreground mt-1">{c.back_text}</p>
-                </div>
-                <form
-                  id={`delete-flashcard-form-${c.id}`}
-                  method="POST"
-                  action="?/deleteFlashcard"
-                  use:enhance={dbActionToast(
-                    "Removing flashcard...",
-                    "Flashcard removed.",
-                  )}
-                >
-                  <input type="hidden" name="flashcard_id" value={c.id} />
-                  <Button
-                    type="button"
-                    variant="destructive"
-                    size="sm"
-                    onclick={() => (pendingFlashcardDeleteId = c.id)}
-                  >
-                    Remove
-                  </Button>
-                </form>
-              </li>
-            {/each}
-          </ul>
-        {/if}
-
-        <form
-          method="POST"
-          action="?/addFlashcard"
-          class="flex flex-col gap-3 border-t pt-6"
-          use:enhance={dbActionToast("Adding flashcard...", "Flashcard added.")}
-        >
-          <textarea
-            name="front_text"
-            required
-            rows={2}
-            maxlength={4000}
-            placeholder="Front"
-            class="border-input bg-input/30 focus-visible:border-ring focus-visible:ring-ring/50 min-h-[4rem] w-full resize-y rounded-2xl border px-3 py-2 text-sm focus-visible:ring-[3px] focus-visible:outline-none"
-          ></textarea>
-          <textarea
-            name="back_text"
-            required
-            rows={2}
-            maxlength={4000}
-            placeholder="Back"
-            class="border-input bg-input/30 focus-visible:border-ring focus-visible:ring-ring/50 min-h-[4rem] w-full resize-y rounded-2xl border px-3 py-2 text-sm focus-visible:ring-[3px] focus-visible:outline-none"
-          ></textarea>
-          <Button type="submit" class="w-fit">Add flashcard</Button>
-        </form>
-      </CardContent>
-    </Card>
-      </Tabs.Content>
-
-      <Tabs.Content value="resources" class="mt-2">
-    <Card>
-      <CardHeader>
-        <CardTitle class="text-lg">Metalearning resources</CardTitle>
-        <CardDescription
-          >Documents, links, or pictures for this program.</CardDescription
-        >
-      </CardHeader>
-      <CardContent class="space-y-6">
-        {#if data.resources.length === 0}
-          <p class="text-muted-foreground text-sm">None yet.</p>
-        {:else}
-          <ul class="space-y-3">
-            {#each data.resources as r (r.id)}
-              <li
-                class="border-border/80 flex flex-col gap-2 rounded-xl border px-3 py-3 sm:flex-row sm:items-start sm:justify-between"
-              >
-                <div class="min-w-0 text-sm">
-                  <p class="text-foreground font-medium">{r.title}</p>
-                  <p class="text-muted-foreground mt-1 break-all">{r.uri}</p>
-                  <Badge variant="outline" class="mt-2 capitalize"
-                    >{r.kind}</Badge
-                  >
-                </div>
-                <form
-                  id={`delete-resource-form-${r.id}`}
-                  method="POST"
-                  action="?/deleteResource"
-                  use:enhance={dbActionToast(
-                    "Removing resource...",
-                    "Resource removed.",
-                  )}
-                >
-                  <input type="hidden" name="resource_id" value={r.id} />
-                  <Button
-                    type="button"
-                    variant="destructive"
-                    size="sm"
-                    onclick={() => (pendingResourceDeleteId = r.id)}
-                  >
-                    Remove
-                  </Button>
-                </form>
-              </li>
-            {/each}
-          </ul>
-        {/if}
-
-        <form
-          method="POST"
-          action="?/addResource"
-          class="flex flex-col gap-3 border-t pt-6"
-          use:enhance={dbActionToast("Adding resource...", "Resource added.")}
-        >
-          <Select.Root
-            type="single"
-            name="kind"
-            bind:value={addResourceKind}
-            required
-            items={[...RESOURCE_KIND_ITEMS]}
-          >
-            <Select.Trigger class="w-full min-w-0">
-              {addResourceKindLabel}
-            </Select.Trigger>
-            <Select.Content>
-              {#each RESOURCE_KIND_ITEMS as rk (rk.value)}
-                <Select.Item value={rk.value} label={rk.label} />
-              {/each}
-            </Select.Content>
-          </Select.Root>
-          <Input name="title" required maxlength={200} placeholder="Title" />
-          <Input
-            name="uri"
-            required
-            maxlength={2000}
-            placeholder="URL or storage path"
-          />
-          <textarea
-            name="description"
-            rows={2}
-            maxlength={4000}
-            placeholder="Optional description"
-            class="border-input bg-input/30 focus-visible:border-ring focus-visible:ring-ring/50 min-h-[4rem] w-full resize-y rounded-2xl border px-3 py-2 text-sm focus-visible:ring-[3px] focus-visible:outline-none"
-          ></textarea>
-          <Button type="submit" class="w-fit">Add resource</Button>
-        </form>
-      </CardContent>
-    </Card>
+          </Dialog.Content>
+        </Dialog.Root>
       </Tabs.Content>
     </Tabs.Root>
 
@@ -980,34 +1717,6 @@
       description="Delete this program and all of its modules, sessions, cards, and resources? This cannot be undone."
       confirmLabel="Delete program"
       onConfirm={() => deleteProgramFormEl?.requestSubmit()}
-    />
-
-    <DestructiveConfirmDialog
-      open={pendingModuleDelete !== null}
-      onOpenChange={(v) => {
-        if (!v) pendingModuleDelete = null;
-      }}
-      title="Remove module?"
-      description={moduleDeleteDialogDescription}
-      confirmLabel="Remove"
-      onConfirm={() => {
-        const t = pendingModuleDelete;
-        if (t) requestSubmitFormById(`delete-module-form-${t.id}`);
-      }}
-    />
-
-    <DestructiveConfirmDialog
-      open={pendingSessionDeleteId !== null}
-      onOpenChange={(v) => {
-        if (!v) pendingSessionDeleteId = null;
-      }}
-      title="Remove session?"
-      description="Remove this session from the module? This cannot be undone."
-      confirmLabel="Remove"
-      onConfirm={() => {
-        const id = pendingSessionDeleteId;
-        if (id) requestSubmitFormById(`delete-session-form-${id}`);
-      }}
     />
 
     <DestructiveConfirmDialog

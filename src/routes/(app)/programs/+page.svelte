@@ -219,10 +219,10 @@
             />
           </div>
 
-          <div class="flex flex-col gap-1.5">
-            <span class="text-foreground text-sm font-medium"
-              >Reason to learn</span
-            >
+          <fieldset class="flex flex-col gap-1.5 border-0 p-0">
+            <legend class="text-foreground text-sm font-medium">
+              Reason to learn
+            </legend>
             <ToggleGroup.Root
               type="single"
               bind:value={reason}
@@ -247,7 +247,7 @@
               Intrinsic: joy, curiosity. Instrumental: career, grades, external
               outcomes.
             </p>
-          </div>
+          </fieldset>
 
           <div class="flex flex-col gap-1.5">
             <label for="reason_description" class="text-sm font-medium"

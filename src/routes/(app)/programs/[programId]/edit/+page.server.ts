@@ -2,6 +2,8 @@ import { fail, redirect } from "@sveltejs/kit";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { buildMockLearningPlan } from "$lib/learning/mock-ai";
 import { UUID_RE } from "$lib/learning/uuid";
+import { applyRoadmapBatch } from "$lib/learning/roadmapBatchApply";
+import type { RoadmapSnapshotPayload } from "$lib/learning/roadmapDraft";
 import type {
   LearningProgramReason,
   LearningSessionType,
@@ -457,6 +459,45 @@ export const actions: Actions = {
     return { success: true as const, message: "Weakness added." };
   },
 
+  updateWeakness: async ({ request, locals, params }) => {
+    if (!UUID_RE.test(params.programId))
+      return fail(400, { message: "Invalid program." });
+    const { user } = await locals.safeGetSession();
+    if (!user) return fail(401, { message: "Sign in required." });
+    const row = await assertProgramOwner(
+      locals.supabase,
+      user.id,
+      params.programId,
+    );
+    if (!row) return fail(404, { message: "Program not found." });
+
+    const fd = await request.formData();
+    const weaknessId = String(fd.get("weakness_id") ?? "");
+    if (!UUID_RE.test(weaknessId))
+      return fail(400, { message: "Invalid weakness." });
+    const title = String(fd.get("title") ?? "").trim();
+    if (!title) return fail(400, { message: "Weakness title is required." });
+
+    const { error: e } = await locals.supabase
+      .from("program_weaknesses")
+      .update({
+        title,
+        description: String(fd.get("description") ?? "").trim() || null,
+        priority: Math.min(
+          32767,
+          Math.max(
+            0,
+            parseInt(String(fd.get("priority") ?? "0"), 10) || 0,
+          ),
+        ),
+      })
+      .eq("id", weaknessId)
+      .eq("learning_program_id", params.programId);
+
+    if (e) return fail(400, { message: e.message });
+    return { success: true as const, message: "Weakness updated." };
+  },
+
   deleteWeakness: async ({ request, locals, params }) => {
     if (!UUID_RE.test(params.programId))
       return fail(400, { message: "Invalid program." });
@@ -511,6 +552,41 @@ export const actions: Actions = {
 
     if (e) return fail(400, { message: e.message });
     return { success: true as const, message: "Flashcard added." };
+  },
+
+  updateFlashcard: async ({ request, locals, params }) => {
+    if (!UUID_RE.test(params.programId))
+      return fail(400, { message: "Invalid program." });
+    const { user } = await locals.safeGetSession();
+    if (!user) return fail(401, { message: "Sign in required." });
+    const row = await assertProgramOwner(
+      locals.supabase,
+      user.id,
+      params.programId,
+    );
+    if (!row) return fail(404, { message: "Program not found." });
+
+    const fd = await request.formData();
+    const flashcardId = String(fd.get("flashcard_id") ?? "");
+    if (!UUID_RE.test(flashcardId))
+      return fail(400, { message: "Invalid flashcard." });
+    const front_text = String(fd.get("front_text") ?? "").trim();
+    const back_text = String(fd.get("back_text") ?? "").trim();
+    if (!front_text || !back_text) {
+      return fail(400, { message: "Front and back are required." });
+    }
+
+    const { error: e } = await locals.supabase
+      .from("program_flashcards")
+      .update({
+        front_text,
+        back_text,
+      })
+      .eq("id", flashcardId)
+      .eq("learning_program_id", params.programId);
+
+    if (e) return fail(400, { message: e.message });
+    return { success: true as const, message: "Flashcard updated." };
   },
 
   deleteFlashcard: async ({ request, locals, params }) => {
@@ -572,6 +648,43 @@ export const actions: Actions = {
     return { success: true as const, message: "Resource added." };
   },
 
+  updateResource: async ({ request, locals, params }) => {
+    if (!UUID_RE.test(params.programId))
+      return fail(400, { message: "Invalid program." });
+    const { user } = await locals.safeGetSession();
+    if (!user) return fail(401, { message: "Sign in required." });
+    const row = await assertProgramOwner(
+      locals.supabase,
+      user.id,
+      params.programId,
+    );
+    if (!row) return fail(404, { message: "Program not found." });
+
+    const fd = await request.formData();
+    const resourceId = String(fd.get("resource_id") ?? "");
+    if (!UUID_RE.test(resourceId))
+      return fail(400, { message: "Invalid resource." });
+    const kind = parseResourceKind(fd.get("kind"));
+    if (!kind) return fail(400, { message: "Resource type is invalid." });
+    const title = String(fd.get("title") ?? "").trim();
+    const uri = String(fd.get("uri") ?? "").trim();
+    if (!title || !uri) return fail(400, { message: "Title and URI are required." });
+
+    const { error: e } = await locals.supabase
+      .from("metalearning_resources")
+      .update({
+        kind,
+        title,
+        description: String(fd.get("description") ?? "").trim() || null,
+        uri,
+      })
+      .eq("id", resourceId)
+      .eq("learning_program_id", params.programId);
+
+    if (e) return fail(400, { message: e.message });
+    return { success: true as const, message: "Resource updated." };
+  },
+
   deleteResource: async ({ request, locals, params }) => {
     if (!UUID_RE.test(params.programId))
       return fail(400, { message: "Invalid program." });
@@ -596,6 +709,47 @@ export const actions: Actions = {
 
     if (e) return fail(400, { message: e.message });
     return { success: true as const, message: "Resource removed." };
+  },
+
+  saveRoadmapBatch: async ({ request, locals, params }) => {
+    if (!UUID_RE.test(params.programId))
+      return fail(400, { message: "Invalid program." });
+    const { user } = await locals.safeGetSession();
+    if (!user) return fail(401, { message: "Sign in required." });
+    const row = await assertProgramOwner(
+      locals.supabase,
+      user.id,
+      params.programId,
+    );
+    if (!row) return fail(404, { message: "Program not found." });
+
+    const fd = await request.formData();
+    const raw = fd.get("payload");
+    if (typeof raw !== "string") return fail(400, { message: "Missing payload." });
+
+    let parsed: RoadmapSnapshotPayload;
+    try {
+      parsed = JSON.parse(raw) as RoadmapSnapshotPayload;
+    } catch {
+      return fail(400, { message: "Invalid JSON." });
+    }
+
+    if (
+      !parsed ||
+      typeof parsed !== "object" ||
+      !Array.isArray(parsed.modules) ||
+      !Array.isArray(parsed.sessions)
+    ) {
+      return fail(400, { message: "Invalid roadmap payload." });
+    }
+
+    const result = await applyRoadmapBatch(
+      locals.supabase,
+      params.programId,
+      parsed,
+    );
+    if (!result.ok) return fail(400, { message: result.message });
+    return { success: true as const, message: "Roadmap saved." };
   },
 
   mockAiGenerate: async ({ request, locals, params }) => {

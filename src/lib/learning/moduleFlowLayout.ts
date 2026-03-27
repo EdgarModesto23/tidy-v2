@@ -6,6 +6,10 @@ import type { LearningModuleRow, LearningSessionRow } from "$lib/learning/types"
 const MODULE_NODE_WIDTH = 300;
 const MODULE_NODE_HEIGHT = 188;
 
+/** Larger box for `ModuleEditorFlowNode` (inline fields + sessions). */
+const MODULE_EDITOR_NODE_WIDTH = 320;
+const MODULE_EDITOR_NODE_HEIGHT = 420;
+
 /** Pre-order walk from root(s) for editor lists. */
 export function modulesInTreeOrder(modules: LearningModuleRow[]): LearningModuleRow[] {
   const byId = new Map(modules.map((m) => [m.id, m]));
@@ -49,7 +53,10 @@ export function layoutModuleNodesForFlow(
     userId: string;
     sessionsByModule: Record<string, LearningSessionRow[]>;
   },
+  layout?: { nodeWidth: number; nodeHeight: number },
 ): { nodes: Node[]; edges: Edge[] } {
+  const MODULE_NODE_W = layout?.nodeWidth ?? MODULE_NODE_WIDTH;
+  const MODULE_NODE_H = layout?.nodeHeight ?? MODULE_NODE_HEIGHT;
   const byId = new Map(modules.map((m) => [m.id, m]));
   const children = new Map<string, LearningModuleRow[]>();
   for (const m of modules) {
@@ -91,7 +98,7 @@ export function layoutModuleNodesForFlow(
   });
 
   for (const mod of modules) {
-    g.setNode(mod.id, { width: MODULE_NODE_WIDTH, height: MODULE_NODE_HEIGHT });
+    g.setNode(mod.id, { width: MODULE_NODE_W, height: MODULE_NODE_H });
   }
   for (const m of modules) {
     const p = m.parent_module_id;
@@ -109,14 +116,14 @@ export function layoutModuleNodesForFlow(
 
   const nodes: Node[] = modules.map((mod) => {
     const laid = g.node(mod.id);
-    const cx = laid?.x ?? MODULE_NODE_WIDTH / 2;
-    const cy = laid?.y ?? MODULE_NODE_HEIGHT / 2;
+    const cx = laid?.x ?? MODULE_NODE_W / 2;
+    const cy = laid?.y ?? MODULE_NODE_H / 2;
     return {
       id: mod.id,
       type: "module",
       position: {
-        x: cx - MODULE_NODE_WIDTH / 2,
-        y: cy - MODULE_NODE_HEIGHT / 2,
+        x: cx - MODULE_NODE_W / 2,
+        y: cy - MODULE_NODE_H / 2,
       },
       data: {
         module: mod,
@@ -128,4 +135,19 @@ export function layoutModuleNodesForFlow(
   });
 
   return { nodes, edges };
+}
+
+/** Editor canvas: taller nodes for inline session editing. */
+export function layoutModuleNodesForFlowEditor(
+  modules: LearningModuleRow[],
+  extra: {
+    programId: string;
+    userId: string;
+    sessionsByModule: Record<string, LearningSessionRow[]>;
+  },
+): { nodes: Node[]; edges: Edge[] } {
+  return layoutModuleNodesForFlow(modules, extra, {
+    nodeWidth: MODULE_EDITOR_NODE_WIDTH,
+    nodeHeight: MODULE_EDITOR_NODE_HEIGHT,
+  });
 }

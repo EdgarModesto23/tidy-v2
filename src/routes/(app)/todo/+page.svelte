@@ -131,16 +131,21 @@
       >
     </CardHeader>
     <CardContent class="pt-0">
-      <div class="flex flex-col gap-2 sm:flex-row sm:items-center">
-        <Input
-          class="flex-1"
-          type="text"
-          bind:value={input}
-          onkeydown={onKeydown}
-          placeholder="What needs doing?"
-          aria-label="Task title"
-          autocomplete="off"
-        />
+      <div class="flex flex-col gap-2 sm:flex-row sm:items-end">
+        <div class="flex min-w-0 flex-1 flex-col gap-1.5">
+          <label for="new-task-title" class="text-foreground text-sm font-medium"
+            >Task</label
+          >
+          <Input
+            id="new-task-title"
+            class="w-full"
+            type="text"
+            bind:value={input}
+            onkeydown={onKeydown}
+            placeholder="What needs doing?"
+            autocomplete="off"
+          />
+        </div>
         <Button
           class="shrink-0 sm:w-auto"
           onclick={addTodo}
