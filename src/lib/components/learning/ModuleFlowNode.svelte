@@ -17,6 +17,7 @@
   import CheckIcon from "@lucide/svelte/icons/check";
   import ListIcon from "@lucide/svelte/icons/list";
   import PencilIcon from "@lucide/svelte/icons/pencil";
+import PlayIcon from "@lucide/svelte/icons/play";
   import RotateCcwIcon from "@lucide/svelte/icons/rotate-ccw";
   import Trash2Icon from "@lucide/svelte/icons/trash-2";
   import { cn } from "$lib/utils.js";
@@ -39,11 +40,26 @@
   }
 
   const done = $derived(!!data.module.completed_at);
+  const lifecycle = $derived.by(() => {
+    if (data.module.completed_at || data.module.module_state === "completed") {
+      return "completed" as const;
+    }
+    if (data.module.module_state === "started") return "started" as const;
+    return "pending" as const;
+  });
 
-  const toggleEnhance = $derived(
+  const completeEnhance = $derived(
     dbActionToastEnhance(
-      done ? "Reopening module…" : "Marking done…",
-      done ? "Module reopened." : "Module marked done.",
+      lifecycle === "completed" ? "Reopening module…" : "Completing module…",
+      lifecycle === "completed" ? "Module reopened." : "Module completed.",
+      { onSuccess: afterModuleMutation },
+    ),
+  );
+
+  const startEnhance = $derived(
+    dbActionToastEnhance(
+      "Starting module…",
+      "Module started.",
       { onSuccess: afterModuleMutation },
     ),
   );
@@ -127,23 +143,33 @@
       Edit
     </Button>
 
-    <form
-      method="POST"
-      action="?/toggleModuleComplete"
-      use:enhance={toggleEnhance}
-      class="inline"
-    >
-      <input type="hidden" name="module_id" value={data.module.id} />
-      <Button variant="secondary" size="sm" type="submit" class="h-8 gap-1 px-2 text-xs">
-        {#if done}
-          <RotateCcwIcon class="size-3.5 shrink-0" />
-          Reopen
-        {:else}
-          <CheckIcon class="size-3.5 shrink-0" />
-          Done
-        {/if}
-      </Button>
-    </form>
+    {#if lifecycle === "pending"}
+      <form method="POST" action="?/startModule" use:enhance={startEnhance} class="inline">
+        <input type="hidden" name="module_id" value={data.module.id} />
+        <Button variant="secondary" size="sm" type="submit" class="h-8 gap-1 px-2 text-xs">
+          <PlayIcon class="size-3.5 shrink-0" />
+          Start
+        </Button>
+      </form>
+    {:else}
+      <form
+        method="POST"
+        action="?/toggleModuleComplete"
+        use:enhance={completeEnhance}
+        class="inline"
+      >
+        <input type="hidden" name="module_id" value={data.module.id} />
+        <Button variant="secondary" size="sm" type="submit" class="h-8 gap-1 px-2 text-xs">
+          {#if lifecycle === "completed"}
+            <RotateCcwIcon class="size-3.5 shrink-0" />
+            Reopen
+          {:else}
+            <CheckIcon class="size-3.5 shrink-0" />
+            Complete
+          {/if}
+        </Button>
+      </form>
+    {/if}
 
     <form
       bind:this={deleteModuleFormEl}

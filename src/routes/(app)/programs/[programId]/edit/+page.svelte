@@ -126,6 +126,7 @@
       "Link",
   );
 
+
   $effect.pre(() => {
     if (!roadmapDirty && data.program) {
       const c = cloneRoadmapFromData(data.modules, data.sessionsByModule);
@@ -318,6 +319,7 @@
         deletable: false,
         type: "moduleEditor",
         data: {
+          programId: params.programId,
           module: row,
           sessions: n.data.sessions as LearningSessionRow[],
           todayIso: data.todayIso,
@@ -364,6 +366,8 @@
           ? newModuleDescription.trim()
           : null,
         sort_order,
+        module_state: "pending",
+        started_at: null,
         completed_at: null,
         created_at: "",
         updated_at: "",
@@ -476,6 +480,7 @@
     clearProgramBundleCache(data.userId, params.programId);
     await invalidate("app:learning:list");
     await invalidate(`app:learning:program:${params.programId}`);
+    await invalidate("app:learning:calendar");
   }
 
   function dbActionToast(

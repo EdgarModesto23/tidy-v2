@@ -3,7 +3,6 @@
   import { Badge } from "$lib/components/ui/badge";
   import { Button } from "$lib/components/ui/button";
   import { Input } from "$lib/components/ui/input";
-  import * as Select from "$lib/components/ui/select";
   import DestructiveConfirmDialog from "$lib/components/destructive-confirm-dialog.svelte";
   import SessionScheduleDateField from "$lib/components/learning/session-schedule-date-field.svelte";
   import * as Dialog from "$lib/components/ui/dialog";
@@ -15,6 +14,7 @@
   } from "$lib/learning/types";
   import PencilIcon from "@lucide/svelte/icons/pencil";
   import Trash2Icon from "@lucide/svelte/icons/trash-2";
+  import PlayIcon from "@lucide/svelte/icons/play";
   import CheckIcon from "@lucide/svelte/icons/check";
   import RotateCcwIcon from "@lucide/svelte/icons/rotate-ccw";
   import { cn } from "$lib/utils.js";
@@ -31,10 +31,6 @@
     module: LearningModuleRow;
     sessions: LearningSessionRow[];
     todayIso: string;
-    rootModuleId: string;
-    isRootModule: boolean;
-    parentSelectItems: { value: string; label: string }[];
-    onSetModuleParent: (parentValue: string) => void;
     onUpdateModule: (id: string, patch: Partial<LearningModuleRow>) => void;
     onRemoveModule: (id: string) => void;
     onUpdateSession: (id: string, patch: Partial<LearningSessionRow>) => void;
@@ -56,6 +52,37 @@
   let deleteSessionId = $state<string | null>(null);
 
   const done = $derived(!!data.module.completed_at);
+  const lifecycle = $derived.by(() => {
+    if (data.module.completed_at || data.module.module_state === "completed") {
+      return "completed" as const;
+    }
+    if (data.module.module_state === "started") return "started" as const;
+    return "pending" as const;
+  });
+
+  function advanceModuleLifecycle() {
+    if (lifecycle === "pending") {
+      data.onUpdateModule(data.module.id, {
+        module_state: "started",
+        started_at: data.module.started_at ?? new Date().toISOString(),
+        completed_at: null,
+      });
+      return;
+    }
+    if (lifecycle === "started") {
+      data.onUpdateModule(data.module.id, {
+        module_state: "completed",
+        completed_at: new Date().toISOString(),
+        started_at: data.module.started_at ?? new Date().toISOString(),
+      });
+      return;
+    }
+    data.onUpdateModule(data.module.id, {
+      module_state: "pending",
+      started_at: null,
+      completed_at: null,
+    });
+  }
 
   const moduleDeleteDescription = $derived(
     !data.module.parent_module_id
@@ -114,20 +141,6 @@
   const editSessionDone = $derived(
     editForm ? editForm.status === "completed" : false,
   );
-
-  let parentSelect = $state<string>("");
-
-  $effect.pre(() => {
-    parentSelect =
-      data.module.parent_module_id === data.rootModuleId
-        ? ""
-        : (data.module.parent_module_id ?? "");
-  });
-
-  const parentTriggerLabel = $derived(
-    data.parentSelectItems.find((i) => i.value === parentSelect)?.label ??
-      "Parent",
-  );
 </script>
 
 <div
@@ -168,6 +181,13 @@
               class="text-[9px] tracking-wide uppercase">Root</Badge
             >
           {/if}
+          {#if lifecycle === "completed"}
+            <Badge variant="default" class="text-[9px] tracking-wide uppercase">Completed</Badge>
+          {:else if lifecycle === "started"}
+            <Badge variant="outline" class="text-[9px] tracking-wide uppercase">Started</Badge>
+          {:else}
+            <Badge variant="outline" class="text-[9px] tracking-wide uppercase">Pending</Badge>
+          {/if}
         </div>
       </div>
       <div class="flex flex-col gap-1.5">
@@ -190,34 +210,6 @@
             })}
         ></textarea>
       </div>
-      {#if !data.isRootModule && data.parentSelectItems.length > 0}
-        <div class="flex flex-col gap-1.5">
-          <label
-            class="text-foreground text-sm font-medium"
-            for={`mod-parent-${data.module.id}`}>Parent</label
-          >
-          <Select.Root
-            type="single"
-            bind:value={parentSelect}
-            items={data.parentSelectItems}
-            onValueChange={(v) => {
-              if (v !== undefined) data.onSetModuleParent(v);
-            }}
-          >
-            <Select.Trigger
-              id={`mod-parent-${data.module.id}`}
-              class="nodrag nopan h-9 w-full min-w-0 text-xs"
-            >
-              {parentTriggerLabel}
-            </Select.Trigger>
-            <Select.Content>
-              {#each data.parentSelectItems as item (item.value)}
-                <Select.Item value={item.value} label={item.label} />
-              {/each}
-            </Select.Content>
-          </Select.Root>
-        </div>
-      {/if}
     </div>
 
     <div
@@ -301,17 +293,17 @@
         variant="secondary"
         size="sm"
         class="h-7 text-xs"
-        onclick={() =>
-          data.onUpdateModule(data.module.id, {
-            completed_at: done ? null : new Date().toISOString(),
-          })}
+        onclick={advanceModuleLifecycle}
       >
-        {#if done}
+        {#if lifecycle === "completed"}
           <RotateCcwIcon class="mr-1 size-3" />
           Reopen
-        {:else}
+        {:else if lifecycle === "started"}
           <CheckIcon class="mr-1 size-3" />
-          Done
+          Complete
+        {:else}
+          <PlayIcon class="mr-1 size-3" />
+          Start
         {/if}
       </Button>
       <Button
@@ -357,12 +349,8 @@
           />
         </div>
         <div class="flex flex-col gap-1.5">
-          <label
-            class="text-foreground text-sm font-medium"
-            for="add-sess-type">Type</label
-          >
+          <span class="text-foreground text-sm font-medium">Type</span>
           <select
-            id="add-sess-type"
             class="border-input bg-background h-9 w-full rounded-md border px-2 text-sm"
             bind:value={addForm.session_type}
           >
@@ -455,12 +443,8 @@
           />
         </div>
         <div class="flex flex-col gap-1.5">
-          <label
-            class="text-foreground text-sm font-medium"
-            for="edit-sess-type">Type</label
-          >
+          <span class="text-foreground text-sm font-medium">Type</span>
           <select
-            id="edit-sess-type"
             class="border-input bg-background h-9 w-full rounded-md border px-2 text-sm"
             bind:value={editForm.session_type}
           >

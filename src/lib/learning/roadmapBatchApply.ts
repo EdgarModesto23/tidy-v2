@@ -3,6 +3,7 @@ import type { RoadmapSnapshotPayload } from "$lib/learning/roadmapDraft";
 import type {
   LearningSessionStatus,
   LearningSessionType,
+  ModuleLifecycleState,
 } from "$lib/learning/types";
 import { isUuid } from "$lib/learning/uuid";
 
@@ -33,6 +34,38 @@ function parseSessionStatus(v: string): LearningSessionStatus | null {
 }
 
 type ModulePayload = RoadmapSnapshotPayload["modules"][number];
+
+function moduleLifecycleFields(m: ModulePayload): {
+  module_state: ModuleLifecycleState;
+  started_at: string | null;
+} {
+  if (m.completed_at) {
+    return { module_state: "completed", started_at: m.started_at ?? null };
+  }
+  const st = m.module_state;
+  if (st === "started" || st === "pending") {
+    return { module_state: st, started_at: m.started_at ?? null };
+  }
+  return { module_state: "pending", started_at: m.started_at ?? null };
+}
+
+function validateScheduledPair(
+  s: RoadmapSnapshotPayload["sessions"][number],
+): string | null {
+  const a = s.scheduled_start_at ?? null;
+  const b = s.scheduled_end_at ?? null;
+  if (a == null && b == null) return null;
+  if (a == null || b == null) {
+    return "Scheduled start and end must both be set or both empty.";
+  }
+  const t0 = Date.parse(a);
+  const t1 = Date.parse(b);
+  if (!Number.isFinite(t0) || !Number.isFinite(t1)) {
+    return "Invalid scheduled time.";
+  }
+  if (t1 <= t0) return "Scheduled end must be after scheduled start.";
+  return null;
+}
 
 function payloadHasCycle(modules: ModulePayload[]): boolean {
   const byId = new Map(modules.map((m) => [m.id, m]));
@@ -213,6 +246,8 @@ export async function applyRoadmapBatch(
     if (!s.planned_start_date || !s.planned_end_date) {
       return { ok: false, message: "Sessions need planned start and end dates." };
     }
+    const schedErr = validateScheduledPair(s);
+    if (schedErr) return { ok: false, message: schedErr };
   }
 
   for (const id of toDeleteSessIds) {
@@ -265,6 +300,7 @@ export async function applyRoadmapBatch(
       }
 
       const now = new Date().toISOString();
+      const ml = moduleLifecycleFields(m);
       const { data: inserted, error: insErr } = await supabase
         .from("learning_modules")
         .insert({
@@ -273,6 +309,8 @@ export async function applyRoadmapBatch(
           title: m.title.trim(),
           description: m.description,
           sort_order: m.sort_order,
+          module_state: ml.module_state,
+          started_at: ml.started_at,
           completed_at: m.completed_at,
           updated_at: now,
         })
@@ -321,6 +359,7 @@ export async function applyRoadmapBatch(
     }
 
     const now = new Date().toISOString();
+    const ml = moduleLifecycleFields(m);
     const { error: upErr } = await supabase
       .from("learning_modules")
       .update({
@@ -328,6 +367,8 @@ export async function applyRoadmapBatch(
         title: m.title.trim(),
         description: m.description,
         sort_order: m.sort_order,
+        module_state: ml.module_state,
+        started_at: ml.started_at,
         completed_at: m.completed_at,
         updated_at: now,
       })
@@ -366,6 +407,8 @@ export async function applyRoadmapBatch(
       sort_order: s.sort_order,
       planned_start_date: s.planned_start_date,
       planned_end_date: s.planned_end_date,
+      scheduled_start_at: s.scheduled_start_at ?? null,
+      scheduled_end_at: s.scheduled_end_at ?? null,
       status: stat,
       estimated_duration_minutes: s.estimated_duration_minutes,
       notes: s.notes,
@@ -400,6 +443,8 @@ export async function applyRoadmapBatch(
         sort_order: s.sort_order,
         planned_start_date: s.planned_start_date,
         planned_end_date: s.planned_end_date,
+        scheduled_start_at: s.scheduled_start_at ?? null,
+        scheduled_end_at: s.scheduled_end_at ?? null,
         status: stat,
         estimated_duration_minutes: s.estimated_duration_minutes,
         notes: s.notes,

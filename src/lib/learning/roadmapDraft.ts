@@ -1,5 +1,9 @@
 import { modulesInTreeOrder } from "$lib/learning/moduleFlowLayout";
-import type { LearningModuleRow, LearningSessionRow } from "$lib/learning/types";
+import type {
+  LearningModuleRow,
+  LearningSessionRow,
+  ModuleLifecycleState,
+} from "$lib/learning/types";
 
 export const TEMP_MODULE_PREFIX = "tmp-mod-";
 export const TEMP_SESSION_PREFIX = "tmp-ses-";
@@ -54,6 +58,8 @@ export function createDefaultSessionDraft(
     sort_order: sortOrder,
     planned_start_date: todayIso,
     planned_end_date: todayIso,
+    scheduled_start_at: null,
+    scheduled_end_at: null,
     status: "planned",
     actual_started_at: null,
     actual_completed_at: null,
@@ -119,6 +125,8 @@ export type RoadmapSnapshotPayload = {
     description: string | null;
     parent_module_id: string | null;
     sort_order: number;
+    module_state?: ModuleLifecycleState | null;
+    started_at?: string | null;
     completed_at: string | null;
   }>;
   sessions: Array<{
@@ -129,6 +137,8 @@ export type RoadmapSnapshotPayload = {
     sort_order: number;
     planned_start_date: string;
     planned_end_date: string;
+    scheduled_start_at?: string | null;
+    scheduled_end_at?: string | null;
     status: LearningSessionRow["status"];
     estimated_duration_minutes: number | null;
     notes: string | null;
@@ -155,6 +165,8 @@ export function buildRoadmapSnapshot(
         sort_order: s.sort_order,
         planned_start_date: s.planned_start_date,
         planned_end_date: s.planned_end_date,
+        scheduled_start_at: s.scheduled_start_at ?? null,
+        scheduled_end_at: s.scheduled_end_at ?? null,
         status: s.status,
         estimated_duration_minutes: s.estimated_duration_minutes,
         notes: s.notes,
@@ -170,6 +182,8 @@ export function buildRoadmapSnapshot(
       description: m.description?.trim() ? m.description.trim() : null,
       parent_module_id: m.parent_module_id ?? null,
       sort_order: m.sort_order,
+      module_state: m.module_state ?? null,
+      started_at: m.started_at ?? null,
       completed_at: m.completed_at ?? null,
     })),
     sessions,

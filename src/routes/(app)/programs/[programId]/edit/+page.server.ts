@@ -3,6 +3,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { buildMockLearningPlan } from "$lib/learning/mock-ai";
 import { UUID_RE } from "$lib/learning/uuid";
 import { applyRoadmapBatch } from "$lib/learning/roadmapBatchApply";
+import { scheduleUnscheduledSessionsForModule } from "$lib/learning/scheduling";
 import type { RoadmapSnapshotPayload } from "$lib/learning/roadmapDraft";
 import type {
   LearningProgramReason,
@@ -216,6 +217,8 @@ export const actions: Actions = {
       title,
       description: String(fd.get("description") ?? "").trim() || null,
       sort_order,
+      module_state: "pending",
+      started_at: null,
     });
 
     if (e) return fail(400, { message: e.message });
@@ -711,6 +714,133 @@ export const actions: Actions = {
     return { success: true as const, message: "Resource removed." };
   },
 
+  startModule: async ({ request, locals, params }) => {
+    if (!UUID_RE.test(params.programId))
+      return fail(400, { message: "Invalid program." });
+    const { user } = await locals.safeGetSession();
+    if (!user) return fail(401, { message: "Sign in required." });
+    const row = await assertProgramOwner(
+      locals.supabase,
+      user.id,
+      params.programId,
+    );
+    if (!row) return fail(404, { message: "Program not found." });
+
+    const fd = await request.formData();
+    const moduleId = String(fd.get("learning_module_id") ?? "");
+    if (!UUID_RE.test(moduleId)) return fail(400, { message: "Invalid module." });
+
+    const inProgram = await moduleInProgram(
+      locals.supabase,
+      moduleId,
+      params.programId,
+    );
+    if (!inProgram) return fail(400, { message: "Module is not in this program." });
+
+    const { data: mod, error: me } = await locals.supabase
+      .from("learning_modules")
+      .select("id, module_state, completed_at, started_at")
+      .eq("id", moduleId)
+      .single();
+
+    if (me || !mod) {
+      return fail(400, { message: me?.message ?? "Module not found." });
+    }
+    if (mod.completed_at) {
+      return fail(400, { message: "Cannot start a completed module." });
+    }
+    if (mod.module_state === "started" || mod.started_at) {
+      return fail(400, { message: "This module is already started." });
+    }
+
+    const startedAt = new Date().toISOString();
+    const { error: ue } = await locals.supabase
+      .from("learning_modules")
+      .update({
+        module_state: "started",
+        started_at: startedAt,
+        updated_at: startedAt,
+      })
+      .eq("id", moduleId)
+      .eq("learning_program_id", params.programId);
+
+    if (ue) return fail(400, { message: ue.message });
+
+    const sched = await scheduleUnscheduledSessionsForModule(locals.supabase, {
+      moduleId,
+      ownerId: user.id,
+    });
+
+    if (!sched.ok) {
+      await locals.supabase
+        .from("learning_modules")
+        .update({
+          module_state: "pending",
+          started_at: null,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", moduleId);
+      return fail(400, { message: sched.message });
+    }
+
+    return {
+      success: true as const,
+      message: "Module started; sessions were placed in your working hours.",
+    };
+  },
+
+  toggleModuleComplete: async ({ request, locals, params }) => {
+    if (!UUID_RE.test(params.programId))
+      return fail(400, { message: "Invalid program." });
+    const { user } = await locals.safeGetSession();
+    if (!user) return fail(401, { message: "Sign in required." });
+    const row = await assertProgramOwner(locals.supabase, user.id, params.programId);
+    if (!row) return fail(404, { message: "Program not found." });
+
+    const fd = await request.formData();
+    const moduleId = String(fd.get("learning_module_id") ?? "");
+    if (!UUID_RE.test(moduleId)) return fail(400, { message: "Invalid module." });
+
+    const inProgram = await moduleInProgram(
+      locals.supabase,
+      moduleId,
+      params.programId,
+    );
+    if (!inProgram) return fail(400, { message: "Module is not in this program." });
+
+    const { data: mod, error: me } = await locals.supabase
+      .from("learning_modules")
+      .select("completed_at, started_at")
+      .eq("id", moduleId)
+      .single();
+    if (me || !mod) {
+      return fail(400, { message: me?.message ?? "Module not found." });
+    }
+
+    const nextCompleted = mod.completed_at ? null : new Date().toISOString();
+    const nextState = nextCompleted
+      ? "completed"
+      : mod.started_at
+        ? "started"
+        : "pending";
+
+    const { error: ue } = await locals.supabase
+      .from("learning_modules")
+      .update({
+        completed_at: nextCompleted,
+        module_state: nextState,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", moduleId)
+      .eq("learning_program_id", params.programId);
+
+    if (ue) return fail(400, { message: ue.message });
+    return {
+      success: true as const,
+      message: nextCompleted ? "Module marked completed." : "Module reopened.",
+    };
+  },
+
   saveRoadmapBatch: async ({ request, locals, params }) => {
     if (!UUID_RE.test(params.programId))
       return fail(400, { message: "Invalid program." });
@@ -822,6 +952,8 @@ export const actions: Actions = {
           description: mod.description,
           sort_order: moduleSort++,
           parent_module_id,
+          module_state: "pending",
+          started_at: null,
         })
         .select("id")
         .single();

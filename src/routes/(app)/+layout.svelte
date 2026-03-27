@@ -268,6 +268,21 @@
         class="text-muted-foreground hover:text-foreground text-sm transition-colors"
         >Tasks</a
       >
+      <a
+        href={resolve("/calendar")}
+        class="text-muted-foreground hover:text-foreground text-sm transition-colors"
+        >Calendar</a
+      >
+      <a
+        href={resolve("/today")}
+        class="text-muted-foreground hover:text-foreground text-sm transition-colors"
+        >Today</a
+      >
+      <a
+        href={resolve("/settings/availability")}
+        class="text-muted-foreground hover:text-foreground text-sm transition-colors"
+        >Hours</a
+      >
       <span
         class="text-muted-foreground hidden max-w-[14rem] truncate text-sm sm:inline"
         >{data.user?.email ?? ""}</span

@@ -17,6 +17,9 @@ export type LearningSessionStatus =
 
 export type MetalearningResourceKind = "document" | "link" | "picture";
 
+/** DB `learning_modules.module_state`; align with `completed_at` / `started_at`. */
+export type ModuleLifecycleState = "pending" | "started" | "completed";
+
 export type LearningProgramRow = {
   id: string;
   owner_id: string;
@@ -41,6 +44,8 @@ export type LearningModuleRow = {
   title: string;
   description: string | null;
   sort_order: number;
+  module_state?: ModuleLifecycleState;
+  started_at?: string | null;
   completed_at?: string | null;
   created_at: string;
   updated_at: string;
@@ -65,6 +70,9 @@ export type LearningSessionRow = {
   sort_order: number;
   planned_start_date: string;
   planned_end_date: string;
+  /** Calendar slot in UTC (ISO string); null until scheduled. */
+  scheduled_start_at?: string | null;
+  scheduled_end_at?: string | null;
   status: LearningSessionStatus;
   actual_started_at: string | null;
   actual_completed_at: string | null;
@@ -72,6 +80,18 @@ export type LearningSessionRow = {
   completed_at?: string | null;
   estimated_duration_minutes: number | null;
   notes: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+/** `user_availability_windows` — local wall time + IANA zone; day 0 = Sunday … 6 = Saturday. */
+export type UserAvailabilityWindowRow = {
+  id: string;
+  owner_id: string;
+  day_of_week: number;
+  start_local_time: string;
+  end_local_time: string;
+  timezone: string;
   created_at: string;
   updated_at: string;
 };
